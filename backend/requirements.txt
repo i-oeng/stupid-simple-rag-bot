@@ -1,0 +1,23 @@
+# Local document processing API
+fastapi>=0.115.0,<0.117.0
+uvicorn[standard]>=0.34.0,<0.36.0
+python-multipart>=0.0.20,<0.1.0
+aiofiles>=24.1.0,<25.0.0
+
+# PDF, image, and QR processing
+PyMuPDF>=1.26.0,<1.27.0
+zxing-cpp>=2.2.0,<2.4.0
+opencv-python-headless>=4.10.0.84,<4.13.0
+Pillow>=11.0.0,<12.0.0
+numpy>=1.26.4,<2.3.0
+
+# Local embeddings and vector search
+chromadb>=0.5.23,<1.1.0
+fastembed>=0.6.0,<0.8.0
+
+# Notebook/dev helpers
+PyYAML>=6.0.2,<7.0.0
+matplotlib>=3.9.0,<3.11.0
+ipykernel>=6.29.0,<7.0.0
+pdfplumber>=0.11.0,<0.12.0
+httpx>=0.28.0,<0.29.0

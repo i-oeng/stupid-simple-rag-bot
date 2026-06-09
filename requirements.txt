@@ -1,0 +1,2 @@
+# Shared local document processing dependencies
+-r backend/requirements.txt

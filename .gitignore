@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local app storage
+backend/storage/
+storage/
+*.sqlite3
+*.db
+
+# Model/cache artifacts
+models/
+*.pt
+*.pth
+*.onnx
+*.gguf
+*.safetensors
+.cache/
+
+# Uploaded/generated documents
+*.zip
+processed_*.pdf
+annotations.json
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
