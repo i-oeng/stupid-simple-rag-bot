@@ -1,4 +1,4 @@
-# Solar Proposal Automation Assistant
+# Proposal Automation Assistant
 
 A local-first prototype for reducing solar proposal generation from days to hours. It turns uploaded utility bills and client/site assumptions into a structured proposal workflow: bill parsing, confidence review, solar sizing, savings estimates, PPA-style proposal draft, underwriting checklist, approval board, and audit log.
 

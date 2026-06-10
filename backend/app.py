@@ -12,6 +12,7 @@ import uvicorn
 
 from demo_data import demo_assumptions, demo_client_info, demo_document, demo_site_data
 from document_processor import LocalDocumentProcessor
+from proposal_pdf import build_proposal_pdf
 from solar_proposal import STATUS_FLOW, SolarProposalService
 from utils import cleanup_old_files, ensure_directories
 
@@ -298,6 +299,18 @@ Structured proposal data:
     return {"proposal_id": proposal_id, "model": OLLAMA_MODEL, "proposal_text": answer}
 
 
+
+@app.get("/solar/proposals/{proposal_id}/export-pdf")
+async def export_solar_proposal_pdf(proposal_id: str):
+    proposal = solar_service.get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    try:
+        pdf_path = build_proposal_pdf(proposal, REPORT_DIR)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {exc}") from exc
+    return FileResponse(pdf_path, media_type="application/pdf", filename=pdf_path.name)
+
 @app.get("/download/report/{document_id}")
 async def download_report(document_id: str):
     report_path = REPORT_DIR / f"{document_id}.md"
@@ -358,6 +371,7 @@ async def root():
             "GET /solar/proposals/{proposal_id}/diff": "Compare proposal versions",
             "PATCH /solar/proposals/{proposal_id}/status": "Move proposal through New, Parsed, Needs Review, Approved, Sent",
             "POST /solar/proposals/{proposal_id}/proposal-text": "Generate polished Qwen proposal text",
+            "GET /solar/proposals/{proposal_id}/export-pdf": "Export a branded PDF proposal",
         },
     }
 

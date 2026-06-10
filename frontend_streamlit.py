@@ -43,6 +43,12 @@ def api_post(path: str, json: Optional[Dict[str, Any]] = None, files=None, timeo
     return response.json()
 
 
+def api_download(path: str):
+    response = requests.get(f"{API_URL}{path}", timeout=120)
+    response.raise_for_status()
+    return response.content
+
+
 def api_patch(path: str, json: Dict[str, Any]):
     response = requests.patch(f"{API_URL}{path}", json=json, timeout=60)
     response.raise_for_status()
@@ -517,6 +523,21 @@ with draft_tab:
     selected = select_proposal(proposals, "draft_proposal")
     if selected:
         st.text_area("Deterministic draft", selected.get("proposal_draft", ""), height=360)
+        export_cols = st.columns([1, 1, 3])
+        if export_cols[0].button("Prepare PDF export"):
+            try:
+                st.session_state["proposal_pdf_bytes"] = api_download(f"/solar/proposals/{selected['proposal_id']}/export-pdf")
+                st.session_state["proposal_pdf_name"] = f"proposal_{selected['proposal_id']}.pdf"
+                st.success("PDF export is ready")
+            except Exception as exc:
+                st.error(f"PDF export failed: {exc}")
+        if st.session_state.get("proposal_pdf_bytes"):
+            export_cols[1].download_button(
+                "Download PDF",
+                data=st.session_state["proposal_pdf_bytes"],
+                file_name=st.session_state.get("proposal_pdf_name", "proposal.pdf"),
+                mime="application/pdf",
+            )
         if st.button("Generate polished draft with Ollama/Qwen"):
             try:
                 result = api_post(f"/solar/proposals/{selected['proposal_id']}/proposal-text", timeout=180)
