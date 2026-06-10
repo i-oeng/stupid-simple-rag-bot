@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
+from demo_data import demo_assumptions, demo_client_info, demo_document, demo_site_data
 from document_processor import LocalDocumentProcessor
 from solar_proposal import STATUS_FLOW, SolarProposalService
 from utils import cleanup_old_files, ensure_directories
@@ -60,6 +61,12 @@ class ProposalStatusRequest(BaseModel):
 
 class AssumptionsUpdateRequest(BaseModel):
     assumptions: Dict[str, Any]
+    actor: str = "user"
+
+
+class ExtractionCorrectionRequest(BaseModel):
+    fields: Dict[str, Any] = Field(default_factory=dict)
+    monthly_consumption: Optional[List[Dict[str, Any]]] = None
     actor: str = "user"
 
 
@@ -183,6 +190,18 @@ async def default_solar_assumptions():
     return solar_service.default_assumptions()
 
 
+@app.post("/demo/seed")
+async def seed_demo_proposal():
+    proposal = solar_service.create_from_document(
+        document=demo_document(),
+        client_info=demo_client_info(),
+        site_data=demo_site_data(),
+        assumptions=demo_assumptions(),
+        actor="demo_seed",
+    )
+    return {"message": "Demo proposal created", "proposal": proposal}
+
+
 @app.post("/solar/proposals/from-document/{document_id}")
 async def create_solar_proposal(document_id: str, request: SolarProposalCreateRequest = SolarProposalCreateRequest()):
     document = processor.get_document(document_id)
@@ -235,6 +254,17 @@ async def update_solar_proposal_status(proposal_id: str, request: ProposalStatus
 async def update_solar_proposal_assumptions(proposal_id: str, request: AssumptionsUpdateRequest):
     try:
         return solar_service.update_assumptions(proposal_id, request.assumptions, actor=request.actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/solar/proposals/{proposal_id}/extraction")
+async def update_solar_proposal_extraction(proposal_id: str, request: ExtractionCorrectionRequest):
+    patch = {"fields": request.fields}
+    if request.monthly_consumption is not None:
+        patch["monthly_consumption"] = request.monthly_consumption
+    try:
+        return solar_service.update_extraction(proposal_id, patch, actor=request.actor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -322,7 +352,9 @@ async def root():
             "POST /process": "Upload PDFs and receive extracted chunks, QR data, tables, validation, and report IDs",
             "POST /solar/proposals/from-document/{document_id}": "Create a solar proposal from a processed utility bill",
             "GET /solar/proposals/board": "CRM-style status board",
+            "POST /demo/seed": "Create a realistic demo proposal without uploading a PDF",
             "PATCH /solar/proposals/{proposal_id}/assumptions": "Edit assumptions and create a new proposal version",
+            "PATCH /solar/proposals/{proposal_id}/extraction": "Correct extracted fields and monthly kWh, then recalculate",
             "GET /solar/proposals/{proposal_id}/diff": "Compare proposal versions",
             "PATCH /solar/proposals/{proposal_id}/status": "Move proposal through New, Parsed, Needs Review, Approved, Sent",
             "POST /solar/proposals/{proposal_id}/proposal-text": "Generate polished Qwen proposal text",

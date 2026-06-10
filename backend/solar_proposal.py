@@ -93,7 +93,7 @@ class SolarProposalService:
             ],
             "review": {
                 "low_confidence_fields": low_confidence,
-                "next_action": "Review low-confidence fields and assumptions" if status == "Needs Review" else "Ready for founder review",
+                "next_action": "Review low-confidence fields and assumptions" if status == "Needs Review" else "Ready for commercial review",
             },
         }
         self._save_proposal(proposal)
@@ -198,7 +198,7 @@ class SolarProposalService:
             "",
             "## Review Notes",
             f"Underwriting risk level: {checklist['risk_level']}",
-            "This draft is generated from extracted bill data and editable assumptions. It requires founder/underwriting review before sending.",
+            "This draft is generated from extracted bill data and editable assumptions. It requires commercial/underwriting review before sending.",
         ])
 
     def update_status(self, proposal_id: str, status: str, actor: str = "user", note: str = "") -> Dict[str, Any]:
@@ -220,19 +220,43 @@ class SolarProposalService:
             raise ValueError("Proposal not found")
         old = deepcopy(proposal.get("assumptions", {}))
         proposal["assumptions"].update({k: v for k, v in assumptions.items() if v is not None})
-        proposal["calculation"] = self.calculate(proposal.get("extraction", {}).get("monthly_consumption", []), proposal["assumptions"])
-        proposal["underwriting_checklist"] = self.build_underwriting_checklist(proposal["extraction"], proposal["calculation"], proposal.get("client_info", {}), proposal.get("site_data", {}))
-        version_id = f"v{len(proposal.get('versions', [])) + 1}"
-        proposal.setdefault("versions", []).append({
-            "version_id": version_id,
-            "created_at": utc_now(),
-            "label": "Assumption update",
-            "assumptions": deepcopy(proposal["assumptions"]),
-            "calculation": deepcopy(proposal["calculation"]),
-        })
-        proposal["updated_at"] = utc_now()
+        self._refresh_proposal(proposal, label="Assumption update")
         self._save_proposal(proposal)
-        self._audit(proposal_id, actor, "assumptions_updated", {"old": old, "new": proposal["assumptions"], "version_id": version_id})
+        self._audit(proposal_id, actor, "assumptions_updated", {"old": old, "new": proposal["assumptions"], "version_id": proposal.get("versions", [])[-1]["version_id"]})
+        return proposal
+
+    def update_extraction(self, proposal_id: str, extraction_patch: Dict[str, Any], actor: str = "user") -> Dict[str, Any]:
+        proposal = self.get_proposal(proposal_id)
+        if not proposal:
+            raise ValueError("Proposal not found")
+
+        extraction = proposal.setdefault("extraction", {})
+        fields = extraction.setdefault("fields", {})
+        incoming_fields = extraction_patch.get("fields", {}) or {}
+        changed_fields = []
+        for name, payload in incoming_fields.items():
+            if not isinstance(payload, dict):
+                payload = {"value": payload}
+            previous = deepcopy(fields.get(name, {}))
+            fields[name] = {
+                "value": payload.get("value"),
+                "confidence": round(float(payload.get("confidence", 1.0)), 2),
+            }
+            if previous != fields[name]:
+                changed_fields.append(name)
+
+        if "monthly_consumption" in extraction_patch:
+            extraction["monthly_consumption"] = self._clean_monthly_rows(extraction_patch.get("monthly_consumption") or [])
+            changed_fields.append("monthly_consumption")
+
+        extraction["confidence_summary"] = {
+            "overall": self._overall_confidence(fields, extraction.get("monthly_consumption", [])),
+            "low_confidence_count": len(self.low_confidence_fields(extraction)),
+        }
+        self._refresh_proposal(proposal, label="Manual correction")
+        proposal["review"]["next_action"] = "Review updated extraction and approve" if proposal.get("status") == "Needs Review" else proposal["review"].get("next_action", "Ready for review")
+        self._save_proposal(proposal)
+        self._audit(proposal_id, actor, "extraction_corrected", {"changed_fields": sorted(set(changed_fields)), "version_id": proposal.get("versions", [])[-1]["version_id"]})
         return proposal
 
     def diff_versions(self, proposal_id: str, left: str, right: str) -> Dict[str, Any]:
@@ -276,6 +300,51 @@ class SolarProposalService:
             if row.get("confidence", 0) < LOW_CONFIDENCE_THRESHOLD:
                 lows.append({"field": f"monthly_consumption.{row.get('month')}", "value": row.get("kwh"), "confidence": row.get("confidence")})
         return lows
+
+    def _refresh_proposal(self, proposal: Dict[str, Any], label: str) -> None:
+        extraction = proposal.get("extraction", {})
+        proposal["calculation"] = self.calculate(extraction.get("monthly_consumption", []), proposal.get("assumptions", {}))
+        proposal["underwriting_checklist"] = self.build_underwriting_checklist(extraction, proposal["calculation"], proposal.get("client_info", {}), proposal.get("site_data", {}))
+        proposal["proposal_draft"] = self.generate_proposal_draft(proposal["proposal_id"], {"filename": proposal.get("source_filename")}, proposal.get("client_info", {}), proposal.get("site_data", {}), extraction, proposal["calculation"], proposal["underwriting_checklist"])
+        low_confidence = self.low_confidence_fields(extraction)
+        proposal["review"] = {
+            "low_confidence_fields": low_confidence,
+            "next_action": "Review low-confidence fields and assumptions" if low_confidence or proposal["underwriting_checklist"]["risk_level"] != "low" else "Ready for commercial review",
+        }
+        proposal["updated_at"] = utc_now()
+        version_id = f"v{len(proposal.get('versions', [])) + 1}"
+        proposal.setdefault("versions", []).append({
+            "version_id": version_id,
+            "created_at": utc_now(),
+            "label": label,
+            "assumptions": deepcopy(proposal.get("assumptions", {})),
+            "calculation": deepcopy(proposal["calculation"]),
+        })
+
+    def _clean_monthly_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cleaned = []
+        for row in rows:
+            month = str(row.get("month", "")).strip().lower()[:3]
+            if month not in MONTHS:
+                continue
+            try:
+                kwh = float(row.get("kwh") or 0)
+            except (TypeError, ValueError):
+                kwh = 0
+            if kwh <= 0:
+                continue
+            try:
+                confidence = float(row.get("confidence", 1.0))
+            except (TypeError, ValueError):
+                confidence = 1.0
+            cleaned.append({
+                "month": month,
+                "kwh": round(kwh, 2),
+                "confidence": round(max(0.0, min(confidence, 1.0)), 2),
+                "source": row.get("source") or "manual",
+            })
+        cleaned.sort(key=lambda item: MONTHS.index(item["month"]))
+        return cleaned
 
     def _extract_monthly_consumption(self, text: str, tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
