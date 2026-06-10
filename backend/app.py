@@ -106,6 +106,7 @@ async def process_pdfs(files: List[UploadFile] = File(...)):
             path.unlink(missing_ok=True)
     return JSONResponse({
         "message": f"Processed {len(results)} PDF(s)",
+        "visual_marker_detection": "local_cv_heuristic",
         "embeddings_enabled": processor.embeddings_enabled,
         "tables_enabled": processor.tables_enabled,
         "documents": results,
@@ -123,6 +124,17 @@ async def get_document(document_id: str):
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
+
+
+@app.get("/documents/{document_id}/report")
+async def download_document_report(document_id: str):
+    document = processor.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    report_path = Path(document.get("report_path", ""))
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="Report file not found")
+    return FileResponse(report_path, media_type="text/markdown", filename=f"report_{document_id}.md")
 
 
 @app.get("/search")
@@ -336,9 +348,9 @@ async def root():
     return {
         "name": "Local DocumentOps Automation API",
         "version": "5.0.0",
-        "description": "Local document automation: PDF extraction, confidence scoring, review queue, RAG search, workflow handoff, audit logs, and generated reports.",
+        "description": "Local document automation: PDF extraction, QR/stamp/signature/logo detection, confidence scoring, review queue, RAG search, workflow handoff, audit logs, and generated reports.",
         "endpoints": {
-            "POST /process": "Upload PDFs and receive extracted chunks, QR data, tables, validation, and report IDs",
+            "POST /process": "Upload PDFs and receive extracted chunks, QR data, visual-marker candidates, tables, validation, and report IDs",
             "POST /demo/seed": "Create a demo document case",
             "POST /cases/from-document/{document_id}": "Create a document case from a processed PDF",
             "GET /cases/board": "Status board grouped by workflow stage",
@@ -348,6 +360,7 @@ async def root():
             "PATCH /cases/{case_id}/status": "Move case through New, Parsed, Needs Review, Approved, Sent",
             "POST /cases/{case_id}/report-text": "Generate polished local LLM report text",
             "GET /cases/{case_id}/export-pdf": "Export a PDF case report",
+            "GET /documents/{document_id}/report": "Download the Markdown processing report",
         },
     }
 

@@ -1,46 +1,35 @@
-# Proposal Automation Assistant
+# Local DocumentOps Automation
 
-A local-first prototype for reducing solar proposal generation from days to hours. It turns uploaded utility bills and client/site assumptions into a structured proposal workflow: bill parsing, confidence review, solar sizing, savings estimates, PPA-style proposal draft, underwriting checklist, approval board, and audit log.
+A local-first prototype for turning messy operational PDFs into reviewable workflow cases. It processes utility bills, contracts, invoices, financial statements, and general operational documents without relying on paid AI APIs.
+
+The app combines document extraction, QR/stamp/signature/logo detection, confidence scoring, human review, RAG search, Telegram access, n8n automation, Supabase-ready persistence, and Docker deployment.
 
 ## What It Does
 
-- Upload utility bills and optional contracts/financial documents
-- Extract text, QR codes, and tables from PDFs
-- Build a cleaned monthly consumption table when month/kWh data is present
-- Score extracted fields with confidence values
-- Let a reviewer manually correct extracted fields and monthly kWh
-- Recalculate the proposal after corrections or assumption changes
-- Estimate solar system size, energy production, savings, capex, opex, and simple payback
-- Generate a PPA-style proposal draft
-- Produce an underwriting/risk checklist
-- Track proposal status: `New -> Parsed -> Needs Review -> Approved -> Sent`
-- Store proposal versions when assumptions or extraction data change
-- Show proposal diffs between versions
-- Keep an audit log of status, assumption, and correction events
-- Optionally use Ollama + Qwen for polished proposal text and document Q&A
-- Includes a Streamlit dashboard, FastAPI backend, Telegram bot interface, and importable n8n workflow
-- Adds operations, CRM-style pipeline, and client-facing energy visibility views
-
-## Core URLs
-
-- FastAPI backend: `http://localhost:8000`
-- API docs: `http://localhost:8000/docs`
-- Streamlit dashboard: `http://localhost:8501`
-- Ollama API: `http://localhost:11434`
+- Upload one or more PDF documents
+- Extract text chunks, tables, QR codes, dates, amounts, and useful identifiers
+- Detect stamp, signature, and logo candidates with local OpenCV heuristics
+- Classify documents as utility bills, contracts, invoices, financial statements, or operational documents
+- Create review cases with status: `New -> Parsed -> Needs Review -> Approved -> Sent`
+- Score extracted fields with confidence values and flag low-confidence fields
+- Let reviewers correct fields and structured period metrics
+- Version settings and corrections so changes can be compared
+- Generate Markdown and PDF case reports
+- Use Ollama + Qwen optionally for Q&A, summaries, and polished report text
+- Include Streamlit, FastAPI, Telegram, n8n, Supabase schema, and Docker Compose
 
 ## Demo Flow
 
-For a concise portfolio walkthrough, see `DEMO_SCRIPT.md`. For a technical overview, see `TECHNICAL_SHOWCASE.md`.
-
-1. Start the backend.
-2. Start the Streamlit dashboard.
-3. Open `http://localhost:8501`.
-4. In `Intake`, click `Create demo proposal` if you do not have a real bill yet.
-5. In `Review Queue`, inspect confidence scores, correct fields, edit monthly kWh, then save corrections.
-6. In `Assumptions & Diff`, change tariff/PPA/yield assumptions and create a recalculated version.
-7. In `Proposal Draft`, review the deterministic draft or generate a polished Ollama/Qwen draft.
-8. Move the proposal through `Needs Review -> Approved -> Sent`.
-9. Check `Audit` to show traceability.
+1. Start the backend and dashboard.
+2. Open `http://localhost:8501`.
+3. In `Intake`, upload PDFs or create a demo case.
+4. In `Operations`, show backlog, risk, completeness, status, and amount visibility.
+5. In `Review Queue`, inspect confidence scores, marker candidates, extracted fields, and checklist failures.
+6. Correct a field or structured metric.
+7. In `Settings & Diff`, change review thresholds or require a visual marker, then compare versions.
+8. In `Report`, export a PDF or generate polished report text with Qwen/Ollama.
+9. Move the case through `Needs Review -> Approved -> Sent`.
+10. In `Audit`, show traceability.
 
 ## Local Windows Run
 
@@ -61,35 +50,14 @@ cd C:\Users\user\Desktop\ragbot
 python -m streamlit run frontend_streamlit.py --server.port 8501
 ```
 
-## Model Choice
-
-Use `qwen3:8b` through Ollama for the best 8 GB VRAM demo balance. See `MODEL_GUIDE.md` for fallback models and deployment notes.
-
 ## Ubuntu Setup
-
-Install system basics:
 
 ```bash
 sudo apt update
 sudo apt install -y python3-venv python3-pip curl git
-```
-
-If you have an NVIDIA GPU, verify it:
-
-```bash
-nvidia-smi
-```
-
-Install Ollama:
-
-```bash
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen3:8b
-```
 
-Set up the app:
-
-```bash
 cd ~/ragbot
 python3 -m venv .venv
 source .venv/bin/activate
@@ -107,7 +75,7 @@ export OLLAMA_MODEL=qwen3:8b
 python app.py
 ```
 
-Start the dashboard in another terminal:
+Start the dashboard:
 
 ```bash
 cd ~/ragbot
@@ -116,81 +84,57 @@ export API_URL=http://127.0.0.1:8000
 python -m streamlit run frontend_streamlit.py --server.port 8501
 ```
 
-Open:
+Open `http://localhost:8501` and `http://localhost:8000/docs`.
 
-```text
-http://localhost:8501
-http://localhost:8000/docs
-```
-
-## Docker Run
+## Docker
 
 ```bash
 docker compose up --build
 ```
 
-This starts the backend, Streamlit dashboard, and n8n. See `DOCKER.md` for the optional Ollama profile and runbook.
+This starts the backend, dashboard, and n8n. See `DOCKER.md` for the optional Ollama profile.
 
 ## Main API Endpoints
 
-- `POST /process` - upload PDFs and extract text, tables, QR codes, validation data
-- `POST /demo/seed` - create a realistic demo proposal without uploading a PDF
-- `POST /solar/proposals/from-document/{document_id}` - create a solar proposal from a processed bill
-- `GET /solar/proposals/board` - status board grouped by workflow stage
-- `GET /solar/proposals/{proposal_id}` - proposal detail
-- `PATCH /solar/proposals/{proposal_id}/extraction` - correct extracted fields/monthly kWh and recalculate
-- `PATCH /solar/proposals/{proposal_id}/status` - approve/reject/move status
-- `PATCH /solar/proposals/{proposal_id}/assumptions` - edit assumptions and recalculate a new version
-- `GET /solar/proposals/{proposal_id}/diff?left=v1&right=v2` - proposal diff mode
-- `GET /solar/proposals/{proposal_id}/audit` - audit log
-- `POST /solar/proposals/{proposal_id}/proposal-text` - generate polished proposal copy with Qwen/Ollama
-- `GET /solar/proposals/{proposal_id}/export-pdf` - export a proposal PDF
-
-## Tests
-
-```bash
-cd ~/ragbot
-source .venv/bin/activate
-python -m pytest -p no:cacheprovider tests
-```
+- `POST /process` - upload PDFs and extract text, QR data, visual markers, tables, validation, and reports
+- `GET /documents/{document_id}/report` - download the Markdown processing report
+- `GET /search?q=...` - search local document vectors
+- `POST /ask` - ask Qwen/Ollama over retrieved chunks
+- `POST /demo/seed?case=utility_bill|contract|invoice|incomplete` - create a demo case
+- `POST /cases/from-document/{document_id}` - create a review case
+- `GET /cases/board` - status board grouped by workflow stage
+- `PATCH /cases/{case_id}/extraction` - correct extracted fields and metrics
+- `PATCH /cases/{case_id}/settings` - edit review settings and create a new version
+- `GET /cases/{case_id}/diff?left=v1&right=v2` - compare versions
+- `PATCH /cases/{case_id}/status` - move a case through the workflow
+- `GET /cases/{case_id}/audit` - case audit log
+- `POST /cases/{case_id}/report-text` - generate polished report text
+- `GET /cases/{case_id}/export-pdf` - export a PDF case report
 
 ## Telegram Bot
 
-Create a bot with BotFather, then run:
-
 ```bash
-cd ~/ragbot
-source .venv/bin/activate
-cd backend
+cd ~/ragbot/backend
+source ../.venv/bin/activate
 export TELEGRAM_BOT_TOKEN=your_bot_token
 export BACKEND_URL=http://127.0.0.1:8000
 python telegram_bot.py
 ```
 
-Telegram is convenient for demos, but uploaded files pass through Telegram transport. Sensitive review should use the local dashboard/API.
+Telegram supports PDF upload, validation, local search, Qwen Q&A, summaries, processing reports, and `/case` to create a review case. Sensitive documents should use the local dashboard/API because Telegram transport is external.
 
-## n8n Automation
+## n8n and Supabase
 
-See `automation/n8n_solar_workflow.json` for an importable workflow and `automation/README.md` for setup notes:
+Import `automation/n8n_documentops_workflow.json` in n8n. It receives a PDF, calls `/process`, creates a case, branches on `Needs Review`, and prepares notification/CRM payloads.
 
-- Trigger on new bill upload
-- Call `/process`
-- Call `/solar/proposals/from-document/{document_id}`
-- Notify reviewer if status is `Needs Review`
-- Create/update CRM record
-- Send proposal summary to Telegram/Slack/email
+Use `supabase/schema.sql` when moving from local JSON storage to Postgres. It covers clients, documents, chunks, vector embeddings, document cases, versions, audit events, workflow events, QR payloads, and visual marker candidates.
 
-## Supabase Schema
+## Tests
 
-See `supabase/schema.sql` for a Postgres/Supabase model covering clients, sites, documents, chunks, proposals, versions, audit events, workflow events, and vector embeddings.
-
-## What To Do Next
-
-- Use the demo button to rehearse the pitch from bill to review to proposal.
-- Collect 3-5 real utility bills and compare the extracted monthly consumption against manual values.
-- Use `supabase/schema.sql` when you want to move from local JSON storage to Supabase Postgres.
-- Import the n8n workflow and connect real Telegram/Slack/CRM credentials when you want live automation.
+```bash
+python -m pytest -p no:cacheprovider tests
+```
 
 ## Notes
 
-The app currently uses local JSON files under `backend/storage/` plus Chroma vector storage. That keeps the prototype fast and fully local. For a more production-like deployment, the next step is replacing JSON storage with Supabase Postgres tables while keeping the same API behavior.
+The app currently uses local JSON under `backend/storage/` plus Chroma vector storage. Visual marker detection is useful for workflow triage, but it is not legal-grade signature verification.

@@ -7,9 +7,9 @@ Use **Qwen3 8B, 4-bit quantized, through Ollama** for the local demo.
 Why:
 
 - Fits an 8 GB VRAM Linux machine better than 14B+ models.
-- Strong instruction following for proposal drafting and document Q&A.
+- Strong instruction following for report drafting and document Q&A.
 - Good multilingual ability for messy business documents.
-- Works well as an optional assistant while deterministic extraction/calculation remains in Python.
+- Works as an optional assistant while deterministic extraction and review logic stay in Python.
 
 Start with:
 
@@ -18,7 +18,7 @@ ollama pull qwen3:8b
 export OLLAMA_MODEL=qwen3:8b
 ```
 
-If `qwen3:8b` is not available in your Ollama install, use:
+Fallback:
 
 ```bash
 ollama pull qwen2.5:7b-instruct
@@ -37,32 +37,29 @@ export OLLAMA_MODEL=qwen2.5:7b-instruct
 
 ## How This Project Uses the Model
 
-The model is intentionally not responsible for finance math or final truth. Python handles:
+Python handles:
 
 - PDF extraction
 - table parsing
-- monthly kWh cleanup
+- QR detection
+- stamp/signature/logo candidate detection
+- structured field extraction
 - confidence scoring
-- system size calculation
-- savings calculation
-- proposal versioning
-- audit logging
+- review checklist logic
+- versioning and audit logging
+- deterministic PDF/Markdown report generation
 
 The LLM handles:
 
 - document Q&A over retrieved excerpts
 - concise summaries
-- polished proposal wording from structured data
+- polished report wording from structured case data
 
 That keeps the demo reliable even if the local model occasionally writes imperfect prose.
 
 ## Suggested Ollama Settings
 
-For proposal text:
-
 - temperature: `0.1` to `0.3`
 - context: `8192` or higher if your machine can handle it
 - use short, structured prompts
-- keep numeric calculations outside the LLM
-
-For Qwen3 thinking mode, use it only when asking for analysis. For proposal drafting, prefer non-thinking or concise output so responses are faster and cleaner.
+- keep extracted values and review decisions outside the LLM

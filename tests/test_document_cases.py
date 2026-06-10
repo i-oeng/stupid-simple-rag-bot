@@ -30,6 +30,8 @@ def test_demo_utility_bill_case_has_extraction_and_summary(tmp_path):
     assert len(item["extraction"]["period_metrics"]) == 12
     assert item["case_summary"]["period_metric_total"] == 561270
     assert item["case_summary"]["total_amount"] == 101028.60
+    assert item["case_summary"]["visual_markers_found"] == 1
+    assert item["extraction"]["visual_marker_types"] == {"logo_candidate": 1}
     assert item["versions"][0]["version_id"] == "v1"
 
 
@@ -40,8 +42,10 @@ def test_demo_variants_cover_contract_invoice_and_incomplete(tmp_path):
     incomplete = create_case(service, "incomplete")
 
     assert contract["extraction"]["document_type"] == "contract"
+    assert contract["case_summary"]["visual_markers_found"] == 2
     assert invoice["extraction"]["document_type"] == "invoice"
     assert incomplete["review_checklist"]["risk_level"] == "high"
+    assert "visual_marker_requirement" in incomplete["review_checklist"]["failed_checks"]
 
 
 def test_settings_update_creates_version_and_diff(tmp_path):

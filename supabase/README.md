@@ -4,10 +4,11 @@
 
 It includes:
 
-- clients and sites
+- clients or document owners
 - uploaded documents and document chunks
 - vector embeddings for RAG search
-- proposals and proposal versions
+- QR payloads and visual marker candidates
+- document review cases and case versions
 - audit events
 - workflow events from n8n, Telegram, CRM, or other automations
 

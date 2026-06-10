@@ -3,7 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: solar-proposal-backend
+    container_name: documentops-backend
     environment:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
@@ -21,7 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.streamlit
-    container_name: solar-proposal-dashboard
+    container_name: documentops-dashboard
     environment:
       API_URL: http://backend:8000
     depends_on:
@@ -31,7 +31,7 @@ services:
 
   n8n:
     image: n8nio/n8n:latest
-    container_name: solar-proposal-n8n
+    container_name: documentops-n8n
     environment:
       N8N_HOST: localhost
       N8N_PORT: 5678
@@ -49,7 +49,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: solar-proposal-ollama
+    container_name: documentops-ollama
     profiles: ["ollama"]
     volumes:
       - ollama-data:/root/.ollama

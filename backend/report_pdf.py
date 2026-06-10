@@ -29,6 +29,8 @@ def build_case_report_pdf(case: Dict[str, Any], output_dir: Path) -> Path:
     _field_rows(state, case.get("extraction", {}).get("fields", {}))
     _section(state, "Structured Metrics")
     _metric_table(state, case.get("extraction", {}).get("period_metrics", []))
+    _section(state, "Visual Markers")
+    _marker_rows(state, case.get("extraction", {}))
     _section(state, "Review Checklist")
     _checklist(state, case.get("review_checklist", {}).get("checks", []))
     _section(state, "Generated Report")
@@ -74,7 +76,7 @@ def _metrics(state: Dict[str, Any], case: Dict[str, Any]) -> None:
         ("Type", summary.get("document_type", "unknown")),
         ("Completeness", f"{float(summary.get('data_completeness') or 0):.0%}"),
         ("Risk", case.get("review_checklist", {}).get("risk_level", "unknown")),
-        ("Low Conf", summary.get("low_confidence_count", 0)),
+        ("Markers", summary.get("visual_markers_found", 0)),
     ]
     box_w = (PAGE_WIDTH - 2 * MARGIN - 18) / 4
     y = state["y"]
@@ -136,6 +138,15 @@ def _metric_table(state: Dict[str, Any], metrics: List[Dict[str, Any]]) -> None:
             _text(state, value, MARGIN + idx * col_w, state["y"], size=8.5, color=INK)
         state["y"] += 16
     state["y"] += 8
+
+
+def _marker_rows(state: Dict[str, Any], extraction: Dict[str, Any]) -> None:
+    marker_types = extraction.get("visual_marker_types", {}) or {}
+    if not marker_types:
+        _paragraph(state, "No stamp, signature, or logo candidates were detected.")
+        return
+    rows = [(kind, count) for kind, count in sorted(marker_types.items())]
+    _key_value_rows(state, rows)
 
 
 def _checklist(state: Dict[str, Any], checks: List[Dict[str, Any]]) -> None:

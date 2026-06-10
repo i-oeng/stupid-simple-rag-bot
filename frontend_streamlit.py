@@ -126,6 +126,7 @@ def pipeline_rows(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "low_confidence": summary.get("low_confidence_count", 0),
             "total_amount": summary.get("total_amount", 0),
             "period_values": summary.get("period_metric_count", 0),
+            "visual_markers": summary.get("visual_markers_found", 0),
             "next_action": item.get("review", {}).get("next_action", ""),
         })
     return rows
@@ -168,6 +169,7 @@ with st.sidebar:
     materiality = st.number_input("Materiality amount", min_value=0.0, value=10000.0, step=1000.0)
     confidence_threshold = st.slider("Confidence threshold", 0.1, 1.0, 0.75, step=0.05)
     review_sla = st.number_input("Review SLA hours", min_value=1, value=24, step=1)
+    require_visual_marker = st.checkbox("Require stamp/signature/logo marker", value=False)
 
 try:
     cases = load_cases()
@@ -211,7 +213,7 @@ with intake_tab:
                 processed = api_post("/process", files=files, timeout=300)
                 client_info = {"company": company, "name": contact, "email": email}
                 metadata = {"owner": company or department, "department": department, "priority": priority}
-                review_settings = {"materiality_amount": materiality, "confidence_threshold": confidence_threshold, "review_sla_hours": review_sla}
+                review_settings = {"materiality_amount": materiality, "confidence_threshold": confidence_threshold, "review_sla_hours": review_sla, "require_visual_marker": require_visual_marker}
                 created = []
                 for doc in processed.get("documents", []):
                     created_case = api_post(
@@ -241,9 +243,9 @@ with intake_tab:
             {"signal": "PDF text extraction", "status": "active"},
             {"signal": "Table extraction", "status": "active" if health.get("tables_enabled") else "off"},
             {"signal": "Vector search", "status": "active" if health.get("embeddings_enabled") else "off"},
-            {"signal": "QR/signature/logo detection", "status": "available in backend document workflow"},
+            {"signal": "QR/stamp/signature/logo detection", "status": "local heuristic"},
         ]
-        st.dataframe(pd.DataFrame(signal_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(signal_rows), width='stretch', hide_index=True)
 
 with ops_tab:
     st.subheader("Operations Dashboard")
@@ -252,7 +254,7 @@ with ops_tab:
         chart_left.bar_chart(pipeline_df.groupby("status").size().reindex(STATUS_FLOW, fill_value=0))
         chart_right.bar_chart(pipeline_df.groupby("risk").size())
         st.markdown("#### Case Pipeline")
-        st.dataframe(pipeline_df.sort_values(["status", "risk", "low_confidence"], ascending=[True, True, False]), use_container_width=True, hide_index=True)
+        st.dataframe(pipeline_df.sort_values(["status", "risk", "low_confidence"], ascending=[True, True, False]), width='stretch', hide_index=True)
     else:
         st.info("No document cases yet.")
 
@@ -275,7 +277,8 @@ with board_tab:
                     <span class="muted">{str(item.get('case_id'))[:8]}</span><br>
                     {badge(str(risk).upper(), risk_tone(risk))}<br><br>
                     <span class="muted">{summary.get('document_type', 'unknown')}</span><br>
-                    <span class="muted">Complete {float(summary.get('data_completeness') or 0):.0%}</span>
+                    <span class="muted">Complete {float(summary.get('data_completeness') or 0):.0%}</span><br>
+                    <span class="muted">Markers {summary.get('visual_markers_found', 0)}</span>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -289,27 +292,32 @@ with review_tab:
     else:
         summary = selected.get("case_summary", {})
         risk = selected.get("review_checklist", {}).get("risk_level", "unknown")
-        cols = st.columns(5)
+        cols = st.columns(6)
         cols[0].metric("Type", summary.get("document_type", "unknown"))
         cols[1].metric("Completeness", f"{float(summary.get('data_completeness') or 0):.0%}")
         cols[2].metric("Low Conf", summary.get("low_confidence_count", 0))
-        cols[3].metric("Amount", fmt_number(summary.get("total_amount"), 0))
-        cols[4].markdown(f"Risk<br>{badge(str(risk).upper(), risk_tone(risk))}", unsafe_allow_html=True)
+        cols[3].metric("Markers", summary.get("visual_markers_found", 0))
+        cols[4].metric("Amount", fmt_number(summary.get("total_amount"), 0))
+        cols[5].markdown(f"Risk<br>{badge(str(risk).upper(), risk_tone(risk))}", unsafe_allow_html=True)
 
         low_conf = selected.get("review", {}).get("low_confidence_fields", [])
         if low_conf:
             st.warning(f"{len(low_conf)} field(s) need review.")
-            st.dataframe(pd.DataFrame(low_conf), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(low_conf), width='stretch', hide_index=True)
         else:
             st.success("No low-confidence fields detected.")
+
+        marker_types = selected.get("extraction", {}).get("visual_marker_types", {}) or {}
+        if marker_types:
+            st.dataframe(pd.DataFrame([{"marker": key, "count": value} for key, value in marker_types.items()]), width='stretch', hide_index=True)
 
         edit_left, edit_right = st.columns([1.1, 1])
         with edit_left:
             st.markdown("#### Extracted Fields")
-            edited_fields = st.data_editor(make_field_rows(selected.get("extraction", {}).get("fields", {})), use_container_width=True, hide_index=True, num_rows="dynamic", key=f"fields_{selected['case_id']}")
+            edited_fields = st.data_editor(make_field_rows(selected.get("extraction", {}).get("fields", {})), width='stretch', hide_index=True, num_rows="dynamic", key=f"fields_{selected['case_id']}")
         with edit_right:
             st.markdown("#### Structured Metrics")
-            edited_metrics = st.data_editor(make_metric_rows(selected.get("extraction", {}).get("period_metrics", [])), use_container_width=True, hide_index=True, num_rows="dynamic", key=f"metrics_{selected['case_id']}")
+            edited_metrics = st.data_editor(make_metric_rows(selected.get("extraction", {}).get("period_metrics", [])), width='stretch', hide_index=True, num_rows="dynamic", key=f"metrics_{selected['case_id']}")
 
         action_cols = st.columns([1.2, 1, 2])
         if action_cols[0].button("Save corrections", type="primary"):
@@ -334,20 +342,21 @@ with review_tab:
             st.rerun()
 
         st.markdown("#### Review Checklist")
-        st.dataframe(pd.DataFrame(selected.get("review_checklist", {}).get("checks", [])), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(selected.get("review_checklist", {}).get("checks", [])), width='stretch', hide_index=True)
 
 with settings_tab:
     st.subheader("Settings & Diff")
     selected = select_case(cases, "settings_case")
     if selected:
         current = selected.get("review_settings", {})
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         new_materiality = c1.number_input("Materiality amount", value=float(current.get("materiality_amount", 10000)), step=1000.0, key="set_materiality")
         new_conf = c2.slider("Confidence threshold", 0.1, 1.0, float(current.get("confidence_threshold", 0.75)), step=0.05, key="set_conf")
         new_sla = c3.number_input("SLA hours", value=int(current.get("review_sla_hours", 24)), step=1, key="set_sla")
         currency = c4.text_input("Currency", value=str(current.get("currency", "USD")), key="set_currency")
+        require_marker = c5.checkbox("Require marker", value=bool(current.get("require_visual_marker", False)), key="set_marker")
         if st.button("Save settings version", type="primary"):
-            api_patch(f"/cases/{selected['case_id']}/settings", {"actor": "streamlit", "review_settings": {"materiality_amount": new_materiality, "confidence_threshold": new_conf, "review_sla_hours": new_sla, "currency": currency}})
+            api_patch(f"/cases/{selected['case_id']}/settings", {"actor": "streamlit", "review_settings": {"materiality_amount": new_materiality, "confidence_threshold": new_conf, "review_sla_hours": new_sla, "currency": currency, "require_visual_marker": require_marker}})
             st.rerun()
         versions = selected.get("versions", [])
         if len(versions) >= 2:
@@ -356,7 +365,7 @@ with settings_tab:
             right_version = st.selectbox("Right version", version_ids, index=len(version_ids) - 1)
             diff = api_get(f"/cases/{selected['case_id']}/diff", left=left_version, right=right_version)
             rows = [{"metric": key, "left": payload.get("left"), "right": payload.get("right"), "delta": payload.get("delta")} for key, payload in diff.get("summary_delta", {}).items()]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
         else:
             st.info("Create a settings or correction version to compare.")
 
@@ -384,7 +393,7 @@ with report_tab:
 
 with integrations_tab:
     st.subheader("Integrations")
-    st.dataframe(pd.DataFrame(integration_rows()), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(integration_rows()), width='stretch', hide_index=True)
     st.json({"event": "case_needs_review", "case_id": "{case_id}", "status": "Needs Review", "next_action": "Review low-confidence fields"})
 
 with audit_tab:
@@ -393,6 +402,6 @@ with audit_tab:
     if selected:
         audit = api_get(f"/cases/{selected['case_id']}/audit").get("events", [])
         if audit:
-            st.dataframe(pd.DataFrame(audit), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(audit), width='stretch', hide_index=True)
         else:
             st.info("No audit events yet.")

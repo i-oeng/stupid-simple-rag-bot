@@ -1,0 +1,104 @@
+{
+  "name": "DocumentOps Automation Intake",
+  "nodes": [
+    {
+      "parameters": {"httpMethod": "POST", "path": "documentops-intake", "responseMode": "responseNode", "options": {}},
+      "id": "document-upload-webhook",
+      "name": "Document Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-900, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.BACKEND_URL || 'http://backend:8000') + '/process'}}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {"parameters": [{"parameterType": "formBinaryData", "name": "files", "inputDataFieldName": "data"}]},
+        "options": {"timeout": 300000}
+      },
+      "id": "process-pdf",
+      "name": "Process PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-660, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.BACKEND_URL || 'http://backend:8000') + '/cases/from-document/' + $json.documents[0].document_id}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ client_info: { company: $json.company || $json.client_company || '', name: $json.contact_name || '', email: $json.contact_email || '' }, metadata: { owner: $json.owner || $json.company || 'Uploaded document', department: $json.department || 'Operations', priority: $json.priority || 'normal' }, review_settings: { materiality_amount: Number($json.materiality_amount || 10000), confidence_threshold: Number($json.confidence_threshold || 0.75), review_sla_hours: Number($json.review_sla_hours || 24), require_visual_marker: String($json.require_visual_marker || '').toLowerCase() === 'true' }, actor: 'n8n' }) }}",
+        "options": {"timeout": 120000}
+      },
+      "id": "create-case",
+      "name": "Create Case",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-420, 0]
+    },
+    {
+      "parameters": {"conditions": {"conditions": [{"leftValue": "={{$json.status}}", "rightValue": "Needs Review", "operator": {"type": "string", "operation": "equals"}}]}, "options": {}},
+      "id": "needs-review",
+      "name": "Needs Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-180, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {"assignments": [
+          {"name": "event", "type": "string", "value": "case_needs_review"},
+          {"name": "case_id", "type": "string", "value": "={{$json.case_id}}"},
+          {"name": "owner", "type": "string", "value": "={{$json.client_info.company || $json.metadata.owner || $json.source_filename || 'Unknown'}}"},
+          {"name": "document_type", "type": "string", "value": "={{$json.case_summary.document_type}}"},
+          {"name": "risk_level", "type": "string", "value": "={{$json.review_checklist.risk_level}}"},
+          {"name": "next_action", "type": "string", "value": "={{$json.review.next_action}}"}
+        ]},
+        "options": {}
+      },
+      "id": "review-notification-payload",
+      "name": "Review Notification Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [60, -100]
+    },
+    {
+      "parameters": {
+        "assignments": {"assignments": [
+          {"name": "case_id", "type": "string", "value": "={{$json.case_id}}"},
+          {"name": "owner", "type": "string", "value": "={{$json.client_info.company || $json.metadata.owner || $json.source_filename || 'Unknown'}}"},
+          {"name": "stage", "type": "string", "value": "={{$json.status}}"},
+          {"name": "risk", "type": "string", "value": "={{$json.review_checklist.risk_level}}"},
+          {"name": "completeness", "type": "number", "value": "={{$json.case_summary.data_completeness}}"},
+          {"name": "total_amount", "type": "number", "value": "={{$json.case_summary.total_amount}}"},
+          {"name": "visual_markers", "type": "number", "value": "={{$json.case_summary.visual_markers_found}}"}
+        ]},
+        "options": {}
+      },
+      "id": "operations-row-payload",
+      "name": "Operations Row Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [60, 120]
+    },
+    {
+      "parameters": {"respondWith": "json", "responseBody": "={{ { ok: true, case_id: $('Create Case').item.json.case_id, status: $('Create Case').item.json.status } }}", "options": {}},
+      "id": "respond-to-upload",
+      "name": "Respond to Upload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [300, 120]
+    }
+  ],
+  "connections": {
+    "Document Upload Webhook": {"main": [[{"node": "Process PDF", "type": "main", "index": 0}]]},
+    "Process PDF": {"main": [[{"node": "Create Case", "type": "main", "index": 0}]]},
+    "Create Case": {"main": [[{"node": "Needs Review?", "type": "main", "index": 0}, {"node": "Operations Row Payload", "type": "main", "index": 0}]]},
+    "Needs Review?": {"main": [[{"node": "Review Notification Payload", "type": "main", "index": 0}], []]},
+    "Operations Row Payload": {"main": [[{"node": "Respond to Upload", "type": "main", "index": 0}]]}
+  },
+  "settings": {"executionOrder": "v1"}
+}

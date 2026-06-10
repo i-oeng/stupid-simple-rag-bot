@@ -23,6 +23,7 @@ DEFAULT_REVIEW_SETTINGS: Dict[str, Any] = {
     "require_identifier": True,
     "require_counterparty": True,
     "require_date_or_term": True,
+    "require_visual_marker": False,
 }
 
 STATUS_FLOW = ["New", "Parsed", "Needs Review", "Approved", "Sent"]
@@ -124,6 +125,8 @@ class DocumentCaseService:
             "period_metrics": metrics,
             "tables_found": len(tables),
             "qr_codes_found": len(document.get("qr_codes", [])),
+            "visual_markers_found": len(document.get("visual_markers", [])),
+            "visual_marker_types": self._marker_counts(document.get("visual_markers", [])),
             "confidence_summary": {
                 "overall": self._overall_confidence(fields, metrics),
                 "low_confidence_count": len([item for item in fields.values() if item.get("confidence", 0) < LOW_CONFIDENCE_THRESHOLD]),
@@ -145,6 +148,8 @@ class DocumentCaseService:
             "low_confidence_count": len(low_confidence),
             "materiality_flag": bool(total_amount and float(total_amount) >= float(settings.get("materiality_amount", 0))),
             "qr_codes_found": extraction.get("qr_codes_found", 0),
+            "visual_markers_found": extraction.get("visual_markers_found", 0),
+            "visual_marker_types": extraction.get("visual_marker_types", {}),
             "tables_found": extraction.get("tables_found", 0),
         }
 
@@ -156,6 +161,7 @@ class DocumentCaseService:
             self._check("counterparty_present", bool(fields.get("counterparty", {}).get("value") or client_info.get("company")) or not settings.get("require_counterparty"), "Counterparty/client/vendor name present"),
             self._check("date_or_term_present", bool(fields.get("document_date", {}).get("value")) or not settings.get("require_date_or_term"), "Date, due date, or term present"),
             self._check("structured_values_found", summary.get("period_metric_count", 0) > 0 or summary.get("total_amount", 0) > 0, "At least one useful metric or amount found"),
+            self._check("visual_marker_requirement", not settings.get("require_visual_marker") or summary.get("visual_markers_found", 0) > 0, "Stamp, signature, or logo marker detected when required"),
             self._check("review_context_present", bool(metadata.get("owner") or metadata.get("department") or client_info.get("company")), "Owner, department, or client context present"),
         ]
         failed = [check["name"] for check in checks if check["status"] != "pass"]
@@ -177,6 +183,7 @@ class DocumentCaseService:
             f"Period value total: {summary['period_metric_total']:,.2f}",
             f"Total amount: {summary['total_amount']:,.2f}",
             f"QR codes found: {summary['qr_codes_found']}",
+            f"Visual markers found: {summary.get('visual_markers_found', 0)}",
             "",
             "## Review Status",
             f"Risk level: {checklist['risk_level']}",
@@ -388,6 +395,13 @@ class DocumentCaseService:
 
     def _check(self, name: str, passed: bool, evidence: str) -> Dict[str, str]:
         return {"name": name, "status": "pass" if passed else "needs_review", "evidence": evidence}
+
+    def _marker_counts(self, markers: List[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for marker in markers or []:
+            kind = marker.get("kind") or marker.get("type") or "unknown"
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
 
     def _parse_number(self, value: str) -> Optional[float]:
         cleaned = re.sub(r"[^0-9,.]", "", str(value)).strip()

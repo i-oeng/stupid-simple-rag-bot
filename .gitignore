@@ -38,8 +38,9 @@ models/
 *.zip
 processed_*.pdf
 annotations.json
-proposal_*.md
 report_*.md
+document_case_*.pdf
+document_case_*.md
 
 # Secrets and local config
 .env

@@ -22,6 +22,7 @@ Commands:
 /search <query> - search processed documents
 /ask <question> - ask Qwen over retrieved document chunks
 /validate [document_id] - run validation checks
+/case [document_id] - create a review case from a processed document
 /summary [document_id] - summarize with Qwen/Ollama
 /report [document_id] - download the Markdown report
 /documents - list recent processed documents
@@ -74,7 +75,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"- status: {data.get('status')}\n"
         f"- embeddings: {data.get('embeddings_enabled')}\n"
         f"- tables: {data.get('tables_enabled')}\n"
-        f"- model: {data.get('ollama_model')}"
+        f"- model: {data.get('ollama_model')}\n"
+        f"- cases: {data.get('case_count', 0)}"
     )
 
 
@@ -134,9 +136,10 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Pages: {doc.get('pages')}\n"
         f"Chunks: {summary.get('chunk_count')}\n"
         f"QR codes: {summary.get('qr_count')}\n"
+        f"Visual markers: {summary.get('visual_marker_count')}\n"
         f"Tables: {summary.get('table_count')}\n"
         f"Risk: {validation.get('risk_level', 'unknown')}\n\n"
-        "Use /summary, /validate, /report, /search, or /ask next."
+        "Use /case, /summary, /validate, /report, /search, or /ask next."
     )
     await status_message.edit_text(reply, parse_mode=ParseMode.MARKDOWN)
 
@@ -191,6 +194,30 @@ async def validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(_format_validation(validation))
 
 
+async def create_case(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    document_id = _doc_id_from_args(context)
+    if not document_id:
+        await update.effective_message.reply_text("Usage: /case <document_id>, or send a PDF first.")
+        return
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.post(
+            f"{BACKEND_URL}/cases/from-document/{document_id}",
+            json={"client_info": {}, "metadata": {"owner": "Telegram intake", "department": "Review"}, "review_settings": {}, "actor": "telegram"},
+        )
+        response.raise_for_status()
+        item = response.json()
+
+    await update.effective_message.reply_text(
+        "Review case created\n"
+        f"Case ID: `{item.get('case_id')}`\n"
+        f"Status: {item.get('status')}\n"
+        f"Type: {item.get('case_summary', {}).get('document_type', 'unknown')}\n"
+        f"Risk: {item.get('review_checklist', {}).get('risk_level', 'unknown')}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     document_id = _doc_id_from_args(context)
     if not document_id:
@@ -212,7 +239,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.get(f"{BACKEND_URL}/download/report/{document_id}")
+        response = await client.get(f"{BACKEND_URL}/documents/{document_id}/report")
         response.raise_for_status()
         content = response.content
 
@@ -242,6 +269,7 @@ def main() -> None:
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("ask", ask))
     application.add_handler(CommandHandler("validate", validate))
+    application.add_handler(CommandHandler("case", create_case))
     application.add_handler(CommandHandler("summary", summary))
     application.add_handler(CommandHandler("report", report))
     application.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))

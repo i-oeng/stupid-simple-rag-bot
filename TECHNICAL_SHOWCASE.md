@@ -1,48 +1,51 @@
 # Technical Showcase
 
-This project is a self-directed solar operations automation prototype. It explores how document processing, local LLMs, workflow automation, dashboards, and lightweight CRM logic can shorten the path from utility bill review to proposal approval.
+This is a self-directed local DocumentOps automation prototype. It explores how PDF processing, local LLMs, RAG, workflow automation, internal dashboards, Telegram access, and production-oriented data modeling can turn unstructured documents into reviewable operational cases.
 
 ## Core Technical Skills Demonstrated
 
 | Area | Implementation |
 | --- | --- |
-| Internal tools | Streamlit dashboard with intake, operations visibility, review queue, proposal board, client view, and audit log |
-| Backend APIs | FastAPI service with upload, document processing, proposal generation, correction, status, diff, and audit endpoints |
-| Document automation | PDF text extraction, table extraction, QR detection, document validation, monthly kWh extraction, confidence scoring |
-| AI-assisted workflow | Optional local Ollama/Qwen proposal drafting and document Q&A, with deterministic calculations kept separate from LLM output |
-| RAG/vector search | Local Chroma/FastEmbed document indexing and search for uploaded operational documents |
-| Human-in-the-loop review | Manual correction screen for extracted fields and monthly consumption before approval |
-| CRM-style workflow | Proposal stages: New, Parsed, Needs Review, Approved, Sent |
-| Versioning | Assumption updates and extraction corrections create proposal versions that can be compared |
-| Operational visibility | Pipeline MW, approved MW, review backlog, risk distribution, confidence, and proposal status tracking |
-| Client visibility | Monthly consumption, estimated solar production, grid usage, savings, and portfolio table |
+| Internal tools | Streamlit dashboard with intake, operations visibility, status board, review queue, settings diff, generated reports, integrations, and audit log |
+| Backend APIs | FastAPI service with upload, document processing, case creation, correction, status, diff, audit, search, summary, Q&A, and PDF export endpoints |
+| Document automation | PDF text extraction, table extraction, QR detection, visual marker detection, validation, structured field extraction, confidence scoring |
+| Visual AI workflow | Local OpenCV heuristics for stamp, signature, and logo candidates, exposed as review signals instead of final truth |
+| AI-assisted workflow | Optional local Ollama/Qwen report writing, summaries, and document Q&A |
+| RAG/vector search | Local Chroma/FastEmbed document indexing and retrieval |
+| Human review | Manual correction screen for extracted fields and structured metrics before approval |
+| Workflow system | Case stages: New, Parsed, Needs Review, Approved, Sent |
+| Versioning | Review setting updates and extraction corrections create comparable case versions |
+| Operational visibility | Backlog, risk, completeness, confidence, marker counts, amount exposure, and status tracking |
 | Integrations | Telegram bot, importable n8n workflow JSON, Supabase schema, FastAPI endpoints for external tools |
-| Testing | Pytest coverage for proposal creation, assumption diffing, and manual correction recalculation |
+| Testing | Pytest coverage for cases, visual marker review checks, diffs, corrections, and PDF export |
 | Deployment | Docker Compose setup for backend, dashboard, n8n, and optional Ollama |
-
-## Why This Project Is Interesting
-
-Utility bills and operational documents are messy, but business teams still need fast, explainable decisions. This prototype treats AI as part of an operations system rather than a standalone chatbot: documents are parsed, uncertain fields are flagged, humans can correct the data, assumptions can be versioned, and the output moves through a review pipeline.
 
 ## Demo Highlights
 
-- Create a realistic demo proposal without needing sample documents.
-- Upload utility bills and generate proposal records.
+- Create demo cases for a utility bill, contract, invoice, or incomplete document.
+- Upload PDFs and generate review cases.
+- Show QR/stamp/signature/logo signals from the document processor.
 - Review extracted fields with confidence scores.
-- Correct monthly kWh and recalculate savings.
-- Compare proposal versions after changing assumptions.
-- Track status and audit events.
-- Show management pipeline visibility.
-- Show a client-facing energy view.
-- Import `automation/n8n_solar_workflow.json` to show a concrete automation workflow.
+- Correct fields or structured period metrics.
+- Require a visual marker for signed/stamped document types and watch the checklist change.
+- Compare case versions after changing review settings.
+- Export a PDF case report.
+- Import `automation/n8n_documentops_workflow.json` to show automation handoff.
 - Use `supabase/schema.sql` to show the production data model.
-- Explain where n8n, Telegram, Supabase, and CRM integrations fit.
+
+## Honest Limitations
+
+- Visual marker detection is heuristic, not legal-grade verification.
+- Extraction quality depends on PDF quality and layout.
+- The current storage layer is local JSON, not a multi-user Postgres backend.
+- Scanned image-only PDFs need stronger OCR for production use.
+- The app should add authentication before shared sensitive-document use.
 
 ## Future Improvements
 
-- Export branded PDF proposals.
-- Connect the n8n workflow to real Telegram/Slack and CRM credentials.
 - Replace local JSON storage with Supabase Postgres.
-- Add auth and role-based review permissions.
-- Add fixtures for multiple real utility bill layouts.
-- Add live inverter or meter data to the client view.
+- Add authentication and role-based approval.
+- Add OCR for scanned PDFs with weak embedded text.
+- Add more real-world document fixtures and regression tests.
+- Add CRM/queue integrations through n8n.
+- Add field-level provenance links back to document pages.

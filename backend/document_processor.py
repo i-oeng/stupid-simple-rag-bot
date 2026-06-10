@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import fitz
+import cv2
 import numpy as np
 import zxingcpp
 
@@ -29,6 +30,14 @@ UTILITY_TERMS = {"utility", "electric", "water", "gas", "meter", "account", "bil
 CONTRACT_TERMS = {"contract", "agreement", "party", "parties", "signature", "terms", "effective date", "obligation"}
 
 
+def marker_counts(markers: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for marker in markers or []:
+        kind = marker.get("kind") or marker.get("type") or "unknown"
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
 @dataclass
 class ProcessedDocument:
     document_id: str
@@ -37,6 +46,7 @@ class ProcessedDocument:
     pages: int
     chunks: List[Dict[str, Any]]
     qr_codes: List[Dict[str, Any]]
+    visual_markers: List[Dict[str, Any]]
     tables: List[Dict[str, Any]]
     report_path: Path
     reused_existing: bool = False
@@ -49,12 +59,15 @@ class ProcessedDocument:
             "pages": self.pages,
             "chunks": self.chunks,
             "qr_codes": self.qr_codes,
+            "visual_markers": self.visual_markers,
             "tables": self.tables,
             "report_path": str(self.report_path),
             "reused_existing": self.reused_existing,
             "summary": {
                 "chunk_count": len(self.chunks),
                 "qr_count": len(self.qr_codes),
+                "visual_marker_count": len(self.visual_markers),
+                "visual_marker_types": marker_counts(self.visual_markers),
                 "table_count": len(self.tables),
                 "has_text": any(chunk["text"].strip() for chunk in self.chunks),
             },
@@ -73,9 +86,13 @@ class LocalDocumentProcessor:
         self.embedding_model = None
         self.collection = None
         if chromadb is not None and TextEmbedding is not None:
-            self.embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-            client = chromadb.PersistentClient(path=str(self.vector_dir))
-            self.collection = client.get_or_create_collection("documents")
+            try:
+                self.embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+                client = chromadb.PersistentClient(path=str(self.vector_dir))
+                self.collection = client.get_or_create_collection("documents")
+            except Exception:
+                self.embedding_model = None
+                self.collection = None
 
     @property
     def embeddings_enabled(self) -> bool:
@@ -96,6 +113,7 @@ class LocalDocumentProcessor:
         doc = fitz.open(str(pdf_path))
         chunks: List[Dict[str, Any]] = []
         qr_codes: List[Dict[str, Any]] = []
+        visual_markers: List[Dict[str, Any]] = []
         page_count = 0
 
         try:
@@ -106,6 +124,7 @@ class LocalDocumentProcessor:
                 if text:
                     chunks.extend(self._chunk_text(document_id, pdf_path.name, page_number, text))
                 qr_codes.extend(self._detect_qr_codes(page, page_number))
+                visual_markers.extend(self._detect_visual_markers(page, page_number))
         finally:
             doc.close()
 
@@ -114,8 +133,8 @@ class LocalDocumentProcessor:
         if self.embeddings_enabled and chunks:
             self._index_chunks(chunks)
 
-        validation = self.validate_payload(chunks, qr_codes, tables)
-        report_path = self._write_report(document_id, pdf_path.name, file_hash, page_count, chunks, qr_codes, tables, validation)
+        validation = self.validate_payload(chunks, qr_codes, tables, visual_markers)
+        report_path = self._write_report(document_id, pdf_path.name, file_hash, page_count, chunks, qr_codes, visual_markers, tables, validation)
         record = ProcessedDocument(
             document_id=document_id,
             filename=pdf_path.name,
@@ -123,6 +142,7 @@ class LocalDocumentProcessor:
             pages=page_count,
             chunks=chunks,
             qr_codes=qr_codes,
+            visual_markers=visual_markers,
             tables=tables,
             report_path=report_path,
         ).to_dict()
@@ -161,9 +181,10 @@ class LocalDocumentProcessor:
         record = self.get_document(document_id)
         if not record:
             return {"document_id": document_id, "error": "Document not found"}
-        return self.validate_payload(record.get("chunks", []), record.get("qr_codes", []), record.get("tables", []))
+        return self.validate_payload(record.get("chunks", []), record.get("qr_codes", []), record.get("tables", []), record.get("visual_markers", []))
 
-    def validate_payload(self, chunks: List[Dict[str, Any]], qr_codes: List[Dict[str, Any]], tables: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def validate_payload(self, chunks: List[Dict[str, Any]], qr_codes: List[Dict[str, Any]], tables: List[Dict[str, Any]], visual_markers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        visual_markers = visual_markers or []
         text = "\n".join(chunk.get("text", "") for chunk in chunks).lower()
         dates = sorted(set(DATE_RE.findall(text)))[:20]
         amounts = sorted(set(match.strip() for match in AMOUNT_RE.findall(text) if any(char.isdigit() for char in match)))[:20]
@@ -178,6 +199,7 @@ class LocalDocumentProcessor:
         checks = [
             {"name": "text_extracted", "status": "pass" if chunks else "fail", "evidence": f"{len(chunks)} text chunks"},
             {"name": "qr_codes", "status": "pass" if qr_codes else "missing", "evidence": f"{len(qr_codes)} QR code(s)"},
+            {"name": "visual_markers", "status": "pass" if visual_markers else "not_detected", "evidence": self._marker_counts(visual_markers)},
             {"name": "dates", "status": "pass" if dates else "missing", "evidence": dates[:5]},
             {"name": "amounts", "status": "pass" if amounts else "missing", "evidence": amounts[:5]},
             {"name": "tables", "status": "pass" if tables else "missing", "evidence": f"{len(tables)} table(s)"},
@@ -198,6 +220,7 @@ class LocalDocumentProcessor:
                 "dates": dates,
                 "amounts": amounts,
                 "qr_codes": [item.get("text") for item in qr_codes],
+                "visual_markers": self._marker_counts(visual_markers),
             },
             "missing_items": missing,
             "disclaimer": "AI-assisted document review only. Not legal certification.",
@@ -250,6 +273,98 @@ class LocalDocumentProcessor:
             results.append({"page": page_number, "text": code.text, "bbox": {"x": min(xs) / zoom, "y": min(ys) / zoom, "width": (max(xs) - min(xs)) / zoom, "height": (max(ys) - min(ys)) / zoom}})
         return results
 
+    def _detect_visual_markers(self, page: fitz.Page, page_number: int) -> List[Dict[str, Any]]:
+        """Heuristic local detection for stamps, signatures, and logo-like visual blocks."""
+        zoom = 1.5
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+        if pix.n > 3:
+            image = image[:, :, :3]
+        if image.size == 0:
+            return []
+
+        height, width = image.shape[:2]
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        markers: List[Dict[str, Any]] = []
+
+        red_mask = ((hsv[:, :, 0] < 12) | (hsv[:, :, 0] > 165)) & (hsv[:, :, 1] > 65) & (hsv[:, :, 2] > 70)
+        blue_mask = (hsv[:, :, 0] > 85) & (hsv[:, :, 0] < 135) & (hsv[:, :, 1] > 55) & (hsv[:, :, 2] > 60)
+        markers.extend(self._marker_contours(red_mask | blue_mask, "stamp_candidate", page_number, zoom, min_area=120, max_items=4))
+
+        top_band = np.zeros((height, width), dtype=bool)
+        top_band[: max(1, int(height * 0.24)), :] = True
+        color_blocks = (hsv[:, :, 1] > 50) & (hsv[:, :, 2] > 80) & top_band
+        markers.extend(self._marker_contours(color_blocks, "logo_candidate", page_number, zoom, min_area=180, max_items=3))
+
+        lower_start = int(height * 0.45)
+        lower = gray[lower_start:, :]
+        ink = cv2.threshold(lower, 185, 255, cv2.THRESH_BINARY_INV)[1]
+        ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        contours, _ = cv2.findContours(ink, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:12]:
+            x, y, w, h = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            if w < 70 or h < 10 or h > 110 or area < 70:
+                continue
+            density = area / max(float(w * h), 1.0)
+            if (w / max(float(h), 1.0)) < 2.2 or density > 0.38:
+                continue
+            markers.append(self._marker_payload("signature_candidate", page_number, x, y + lower_start, w, h, zoom, 0.58))
+            if len([item for item in markers if item.get("kind") == "signature_candidate"]) >= 3:
+                break
+
+        return self._dedupe_markers(markers)
+
+    def _marker_contours(self, mask: np.ndarray, kind: str, page_number: int, zoom: float, min_area: int, max_items: int) -> List[Dict[str, Any]]:
+        prepared = cv2.medianBlur(mask.astype(np.uint8) * 255, 5)
+        prepared = cv2.morphologyEx(prepared, cv2.MORPH_CLOSE, np.ones((4, 4), np.uint8))
+        contours, _ = cv2.findContours(prepared, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        results: List[Dict[str, Any]] = []
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+            area = cv2.contourArea(contour)
+            if area < min_area:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            if w < 12 or h < 8:
+                continue
+            aspect = w / max(float(h), 1.0)
+            if kind == "stamp_candidate" and not 0.35 <= aspect <= 2.8:
+                continue
+            confidence = 0.64 if kind == "stamp_candidate" else 0.56
+            results.append(self._marker_payload(kind, page_number, x, y, w, h, zoom, confidence))
+            if len(results) >= max_items:
+                break
+        return results
+
+    def _marker_payload(self, kind: str, page_number: int, x: int, y: int, w: int, h: int, zoom: float, confidence: float) -> Dict[str, Any]:
+        return {
+            "kind": kind,
+            "page": page_number,
+            "confidence": confidence,
+            "bbox": {"x": round(x / zoom, 2), "y": round(y / zoom, 2), "width": round(w / zoom, 2), "height": round(h / zoom, 2)},
+            "method": "local_cv_heuristic",
+        }
+
+    def _dedupe_markers(self, markers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        deduped: List[Dict[str, Any]] = []
+        for marker in markers:
+            box = marker.get("bbox", {})
+            duplicate = False
+            for existing in deduped:
+                other = existing.get("bbox", {})
+                same_page = existing.get("page") == marker.get("page")
+                close = abs(float(box.get("x", 0)) - float(other.get("x", 0))) < 12 and abs(float(box.get("y", 0)) - float(other.get("y", 0))) < 12
+                if same_page and close and existing.get("kind") == marker.get("kind"):
+                    duplicate = True
+                    break
+            if not duplicate:
+                deduped.append(marker)
+        return deduped[:10]
+
+    def _marker_counts(self, markers: List[Dict[str, Any]]) -> Dict[str, int]:
+        return marker_counts(markers)
+
     def _extract_tables(self, pdf_path: Path, document_id: str) -> List[Dict[str, Any]]:
         if pdfplumber is None:
             return []
@@ -271,7 +386,7 @@ class LocalDocumentProcessor:
         metadatas = [{"document_id": chunk["document_id"], "filename": chunk["filename"], "page": chunk["page"], "chunk_index": chunk["chunk_index"]} for chunk in chunks]
         self.collection.upsert(ids=[chunk["id"] for chunk in chunks], documents=texts, embeddings=vectors, metadatas=metadatas)
 
-    def _write_report(self, document_id: str, filename: str, file_hash: str, pages: int, chunks: List[Dict[str, Any]], qr_codes: List[Dict[str, Any]], tables: List[Dict[str, Any]], validation: Dict[str, Any]) -> Path:
+    def _write_report(self, document_id: str, filename: str, file_hash: str, pages: int, chunks: List[Dict[str, Any]], qr_codes: List[Dict[str, Any]], visual_markers: List[Dict[str, Any]], tables: List[Dict[str, Any]], validation: Dict[str, Any]) -> Path:
         report_path = self.report_dir / f"{document_id}.md"
         lines = [
             f"# Document Processing Report: {filename}",
@@ -281,12 +396,15 @@ class LocalDocumentProcessor:
             f"Pages: {pages}",
             f"Text chunks indexed: {len(chunks)}",
             f"QR codes detected: {len(qr_codes)}",
+            f"Visual markers detected: {len(visual_markers)}",
             f"Tables extracted: {len(tables)}",
             f"Validation risk: {validation.get('risk_level')}",
             "",
             "## QR Codes",
         ]
         lines.extend([f"- Page {item['page']}: {item['text']}" for item in qr_codes] or ["- None detected"])
+        lines.extend(["", "## Visual Markers"])
+        lines.extend([f"- Page {item.get('page')}: {item.get('kind')} confidence {item.get('confidence')}" for item in visual_markers] or ["- None detected"])
         lines.extend(["", "## Validation Checks"])
         for check in validation.get("checks", []):
             lines.append(f"- {check['name']}: {check['status']} ({check['evidence']})")
@@ -315,6 +433,7 @@ class LocalDocumentProcessor:
             pages=record.get("pages", 0),
             chunks=record.get("chunks", []),
             qr_codes=record.get("qr_codes", []),
+            visual_markers=record.get("visual_markers", []),
             tables=record.get("tables", []),
             report_path=Path(record["report_path"]),
             reused_existing=record.get("reused_existing", False),
