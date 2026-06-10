@@ -18,7 +18,7 @@ A local-first prototype for reducing solar proposal generation from days to hour
 - Show proposal diffs between versions
 - Keep an audit log of status, assumption, and correction events
 - Optionally use Ollama + Qwen for polished proposal text and document Q&A
-- Includes a Streamlit dashboard, FastAPI backend, Telegram bot interface, and n8n workflow notes
+- Includes a Streamlit dashboard, FastAPI backend, Telegram bot interface, and importable n8n workflow
 - Adds operations, CRM-style pipeline, and client-facing energy visibility views
 
 ## Core URLs
