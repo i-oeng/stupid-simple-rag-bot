@@ -1,91 +1,47 @@
 from typing import Any, Dict
 
 
-def demo_document(case: str = "clean") -> Dict[str, Any]:
+def demo_document(case: str = "utility_bill") -> Dict[str, Any]:
     cases = {
-        "clean": _clean_bill,
-        "messy": _messy_bill,
-        "incomplete": _incomplete_bill,
+        "utility_bill": _utility_bill,
+        "contract": _contract,
+        "invoice": _invoice,
+        "incomplete": _incomplete_document,
     }
-    return cases.get(case, _clean_bill)()
+    return cases.get(case, _utility_bill)()
 
 
-def demo_client_info(case: str = "clean") -> Dict[str, Any]:
+def demo_client_info(case: str = "utility_bill") -> Dict[str, Any]:
     clients = {
-        "clean": {
-            "company": "Green Valley Foods Ltd",
-            "name": "Amina Bello",
-            "email": "amina.bello@example.com",
-            "phone": "+234 000 000 0000",
-        },
-        "messy": {
-            "company": "Atlantic Cold Storage",
-            "name": "Kojo Mensah",
-            "email": "ops@example.com",
-            "phone": "+233 000 000 000",
-        },
-        "incomplete": {
-            "company": "Riverbend Manufacturing",
-            "name": "",
-            "email": "",
-            "phone": "",
-        },
+        "utility_bill": {"company": "Green Valley Foods Ltd", "name": "Amina Bello", "email": "amina.bello@example.com"},
+        "contract": {"company": "Atlantic Cold Storage", "name": "Kojo Mensah", "email": "ops@example.com"},
+        "invoice": {"company": "Riverbend Manufacturing", "name": "Maya Chen", "email": "finance@example.com"},
+        "incomplete": {"company": "Unassigned Review", "name": "", "email": ""},
     }
-    return clients.get(case, clients["clean"])
+    return clients.get(case, clients["utility_bill"])
 
 
-def demo_site_data(case: str = "clean") -> Dict[str, Any]:
-    sites = {
-        "clean": {
-            "address": "Plot 42, Industrial Zone, Lagos",
-            "country": "Nigeria",
-            "usable_roof_area_m2": 4200,
-        },
-        "messy": {
-            "address": "Tema Free Zone, Warehouse 7",
-            "country": "Ghana",
-            "usable_roof_area_m2": 5100,
-        },
-        "incomplete": {
-            "address": "",
-            "country": "",
-            "usable_roof_area_m2": 0,
-        },
+def demo_metadata(case: str = "utility_bill") -> Dict[str, Any]:
+    metadata = {
+        "utility_bill": {"owner": "Operations", "department": "Energy", "priority": "normal"},
+        "contract": {"owner": "Legal Ops", "department": "Commercial", "priority": "high"},
+        "invoice": {"owner": "Finance Ops", "department": "Accounts Payable", "priority": "normal"},
+        "incomplete": {"owner": "Review Queue", "department": "Unknown", "priority": "high"},
     }
-    return sites.get(case, sites["clean"])
+    return metadata.get(case, metadata["utility_bill"])
 
 
-def demo_assumptions(case: str = "clean") -> Dict[str, Any]:
-    assumptions = {
-        "clean": {
-            "grid_tariff_per_kwh": 0.18,
-            "ppa_rate_per_kwh": 0.125,
-            "solar_yield_kwh_per_kwp_year": 1500,
-            "target_offset_pct": 0.72,
-            "system_derate_pct": 0.86,
-            "capex_per_kwp": 790,
-        },
-        "messy": {
-            "grid_tariff_per_kwh": 0.21,
-            "ppa_rate_per_kwh": 0.135,
-            "solar_yield_kwh_per_kwp_year": 1480,
-            "target_offset_pct": 0.68,
-            "system_derate_pct": 0.85,
-            "capex_per_kwp": 820,
-        },
-        "incomplete": {
-            "grid_tariff_per_kwh": 0.16,
-            "ppa_rate_per_kwh": 0.12,
-            "solar_yield_kwh_per_kwp_year": 1425,
-            "target_offset_pct": 0.70,
-            "system_derate_pct": 0.84,
-            "capex_per_kwp": 800,
-        },
+def demo_review_settings(case: str = "utility_bill") -> Dict[str, Any]:
+    settings = {
+        "utility_bill": {"materiality_amount": 10000, "confidence_threshold": 0.75, "review_sla_hours": 24, "currency": "USD"},
+        "contract": {"materiality_amount": 50000, "confidence_threshold": 0.80, "review_sla_hours": 12, "currency": "USD"},
+        "invoice": {"materiality_amount": 7500, "confidence_threshold": 0.75, "review_sla_hours": 24, "currency": "USD"},
+        "incomplete": {"materiality_amount": 5000, "confidence_threshold": 0.85, "review_sla_hours": 8, "currency": "USD"},
     }
-    return assumptions.get(case, assumptions["clean"])
+    return settings.get(case, settings["utility_bill"])
 
 
-def _clean_bill() -> Dict[str, Any]:
+def _utility_bill() -> Dict[str, Any]:
     text = """
 Green Valley Foods Ltd
 Utility Bill / Electricity Invoice
@@ -107,55 +63,70 @@ Sep 49250 kWh
 Oct 47100 kWh
 Nov 45400 kWh
 Dec 43800 kWh
-Current grid tariff: 0.18 per kWh
+Amount due: 101028.60
+Due date: 06/30/2026
 """.strip()
-    monthly_rows = [["Month", "Consumption kWh"]] + [
-        ["Jan", "42800"], ["Feb", "39600"], ["Mar", "44150"], ["Apr", "46220"],
-        ["May", "48750"], ["Jun", "50300"], ["Jul", "52100"], ["Aug", "51800"],
-        ["Sep", "49250"], ["Oct", "47100"], ["Nov", "45400"], ["Dec", "43800"],
-    ]
-    return _document("demo-utility-bill-clean", "demo_clean_utility_bill.pdf", text, monthly_rows, "DEMO-BILL-CLEAN-1048")
+    rows = [["Month", "Value"], ["Jan", "42800"], ["Feb", "39600"], ["Mar", "44150"], ["Apr", "46220"], ["May", "48750"], ["Jun", "50300"], ["Jul", "52100"], ["Aug", "51800"], ["Sep", "49250"], ["Oct", "47100"], ["Nov", "45400"], ["Dec", "43800"]]
+    return _document("demo-doc-utility-bill", "demo_utility_bill.pdf", text, rows, "DEMO-DOC-UTILITY")
 
 
-def _messy_bill() -> Dict[str, Any]:
+def _contract() -> Dict[str, Any]:
     text = """
-ATLANTIC COLD STORAGE - ELECTRICITY STATEMENT
-Acct # ACS/7792-19      Meter No M-772910-AC
-Rate class: MD Commercial
-Supply Address - Tema Free Zone, Warehouse 7
-Consumption history: Jan 61,400 kWh | Feb 58,900 kWh | Mar 63,150 kWh
-Apr 65,800 kWh | May 70,100 kWh | Jun 73,250 kWh
-Jul 76,400 kWh | Aug 75,950 kWh | Sep 72,600 kWh
-Oct 69,500 kWh | Nov 66,200 kWh | Dec 64,750 kWh
-Notes: cold-room load includes night operations and diesel backup events.
+Services Agreement
+Contract Number: ACS-CON-2026-77
+Party: Atlantic Cold Storage
+Counterparty: Northline Maintenance Ltd
+Effective Date: May 1, 2026
+Expiry Date: April 30, 2028
+Contract Value: 125000.00
+Category: Facilities Maintenance
+Project Site: Tema Free Zone, Warehouse 7
+Payment term: net 30 days after approved invoice.
+Termination: 60 days written notice.
 """.strip()
-    monthly_rows = [["Billing Period", "Energy"], ["Jan", "61400"], ["Mar", "63150"], ["May", "70100"], ["Jul", "76400"], ["Sep", "72600"], ["Nov", "66200"]]
-    return _document("demo-utility-bill-messy", "demo_messy_cold_storage_bill.pdf", text, monthly_rows, "DEMO-BILL-MESSY-7792")
+    rows = [["Milestone", "Amount"], ["Mobilization", "25000"], ["Quarterly service", "25000"], ["Retention", "10000"]]
+    return _document("demo-doc-contract", "demo_service_contract.pdf", text, rows, "DEMO-DOC-CONTRACT")
 
 
-def _incomplete_bill() -> Dict[str, Any]:
+def _invoice() -> Dict[str, Any]:
     text = """
-Riverbend Manufacturing
-Electricity invoice extract
-Customer: Riverbend Manufacturing
-Billing period: Q1 summary only
-Jan 30200 kWh
-Feb 28750 kWh
-Mar 31400 kWh
+Vendor Invoice
+Invoice Number: INV-88420
+Vendor: Delta Components Ltd
+Client: Riverbend Manufacturing
+Invoice Date: 05/15/2026
+Due Date: 06/15/2026
+Cost Center: Operations Spares
+Invoice total: 18450.75
+Line items
+Jan 6200 units
+Feb 5800 units
+Mar 6450 units
+""".strip()
+    rows = [["Line", "Amount"], ["Bearings", "7400.25"], ["Motors", "8100.50"], ["Logistics", "2950.00"]]
+    return _document("demo-doc-invoice", "demo_vendor_invoice.pdf", text, rows, "DEMO-DOC-INVOICE")
+
+
+def _incomplete_document() -> Dict[str, Any]:
+    text = """
+Scanned operational document
+Reference page missing
+Jan 30200
+Feb 28750
 Some pages missing from scanned PDF.
 """.strip()
-    monthly_rows = [["Month", "kWh"], ["Jan", "30200"], ["Feb", "28750"], ["Mar", "31400"]]
-    return _document("demo-utility-bill-incomplete", "demo_incomplete_bill.pdf", text, monthly_rows, "DEMO-BILL-INCOMPLETE")
+    rows = [["Month", "Value"], ["Jan", "30200"], ["Feb", "28750"]]
+    return _document("demo-doc-incomplete", "demo_incomplete_operational_doc.pdf", text, rows, "DEMO-DOC-INCOMPLETE")
 
 
-def _document(document_id: str, filename: str, text: str, monthly_rows: list, qr_text: str) -> Dict[str, Any]:
+def _document(document_id: str, filename: str, text: str, rows: list, qr_text: str) -> Dict[str, Any]:
     return {
         "document_id": document_id,
         "filename": filename,
         "pages": 2,
         "metadata": {"source": "seeded_demo"},
         "qr_codes": [{"page": 1, "text": qr_text, "type": "qrcode"}],
-        "tables": [{"page": 1, "rows": monthly_rows}],
+        "tables": [{"page": 1, "rows": rows}],
         "chunks": [
             {"chunk_id": f"{document_id}-p1", "document_id": document_id, "filename": filename, "page": 1, "text": text},
         ],

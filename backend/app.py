@@ -10,16 +10,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
-from demo_data import demo_assumptions, demo_client_info, demo_document, demo_site_data
+from demo_data import demo_client_info, demo_document, demo_metadata, demo_review_settings
+from document_cases import STATUS_FLOW, DocumentCaseService
 from document_processor import LocalDocumentProcessor
-from proposal_pdf import build_proposal_pdf
-from solar_proposal import STATUS_FLOW, SolarProposalService
+from report_pdf import build_case_report_pdf
 from utils import cleanup_old_files, ensure_directories
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 
-app = FastAPI(title="Solar Proposal Automation API", version="4.0.0")
+app = FastAPI(title="Local DocumentOps Automation API", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +35,7 @@ UPLOAD_DIR = STORAGE_DIR / "uploads"
 REPORT_DIR = STORAGE_DIR / "reports"
 ensure_directories(STORAGE_DIR)
 processor = LocalDocumentProcessor(STORAGE_DIR)
-solar_service = SolarProposalService(STORAGE_DIR)
+case_service = DocumentCaseService(STORAGE_DIR)
 
 
 class AskRequest(BaseModel):
@@ -47,34 +47,34 @@ class SummarizeRequest(BaseModel):
     max_chunks: int = 8
 
 
-class SolarProposalCreateRequest(BaseModel):
+class CaseCreateRequest(BaseModel):
     client_info: Dict[str, Any] = Field(default_factory=dict)
-    site_data: Dict[str, Any] = Field(default_factory=dict)
-    assumptions: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    review_settings: Dict[str, Any] = Field(default_factory=dict)
     actor: str = "user"
 
 
-class ProposalStatusRequest(BaseModel):
+class CaseStatusRequest(BaseModel):
     status: str
     actor: str = "user"
     note: str = ""
 
 
-class AssumptionsUpdateRequest(BaseModel):
-    assumptions: Dict[str, Any]
+class SettingsUpdateRequest(BaseModel):
+    review_settings: Dict[str, Any]
     actor: str = "user"
 
 
 class ExtractionCorrectionRequest(BaseModel):
     fields: Dict[str, Any] = Field(default_factory=dict)
-    monthly_consumption: Optional[List[Dict[str, Any]]] = None
+    period_metrics: Optional[List[Dict[str, Any]]] = None
     actor: str = "user"
 
 
 @app.on_event("startup")
 async def startup_event():
     cleanup_old_files(UPLOAD_DIR)
-    print("Solar proposal automation API started")
+    print("Local DocumentOps automation API started")
     print(f"Embeddings enabled: {processor.embeddings_enabled}")
     print(f"Tables enabled: {processor.tables_enabled}")
 
@@ -83,7 +83,6 @@ async def startup_event():
 async def process_pdfs(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
-
     results = []
     saved_paths = []
     try:
@@ -95,10 +94,8 @@ async def process_pdfs(files: List[UploadFile] = File(...)):
             with file_path.open("wb") as output:
                 shutil.copyfileobj(file.file, output)
             saved_paths.append(file_path)
-
         if not saved_paths:
             raise HTTPException(status_code=400, detail="No PDF files found")
-
         for path in saved_paths:
             processed = processor.process_pdf(path)
             result = processed.to_dict()
@@ -107,7 +104,6 @@ async def process_pdfs(files: List[UploadFile] = File(...)):
     finally:
         for path in saved_paths:
             path.unlink(missing_ok=True)
-
     return JSONResponse({
         "message": f"Processed {len(results)} PDF(s)",
         "embeddings_enabled": processor.embeddings_enabled,
@@ -147,7 +143,6 @@ async def ask_documents(request: AskRequest):
     search_result = processor.search(request.question, request.limit)
     if search_result.get("error"):
         raise HTTPException(status_code=503, detail=search_result["error"])
-
     context = _format_search_context(search_result["results"])
     prompt = f"""You are a local document review assistant.
 Use only the provided document excerpts. If the answer is not in the excerpts, say so.
@@ -167,7 +162,6 @@ async def summarize_document(document_id: str, request: SummarizeRequest = Summa
     document = processor.get_document(document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-
     chunks = document.get("chunks", [])[: request.max_chunks]
     validation = processor.validate_document(document_id)
     context = "\n\n".join(f"[Page {chunk.get('page')}] {chunk.get('text')}" for chunk in chunks)
@@ -186,167 +180,149 @@ Document excerpts:
     return {"document_id": document_id, "summary": answer, "validation": validation, "model": OLLAMA_MODEL}
 
 
-@app.get("/solar/assumptions/default")
-async def default_solar_assumptions():
-    return solar_service.default_assumptions()
+@app.get("/cases/settings/default")
+async def default_case_settings():
+    return case_service.default_settings()
 
 
 @app.post("/demo/seed")
-async def seed_demo_proposal():
-    proposal = solar_service.create_from_document(
+async def seed_demo_case(case: str = Query("utility_bill", pattern="^(utility_bill|contract|invoice|incomplete)$")):
+    document_case = case_service.create_from_document(
         document=demo_document(case),
         client_info=demo_client_info(case),
-        site_data=demo_site_data(case),
-        assumptions=demo_assumptions(case),
+        metadata=demo_metadata(case),
+        review_settings=demo_review_settings(case),
         actor="demo_seed",
     )
-    return {"message": "Demo proposal created", "case": case, "proposal": proposal}
+    return {"message": "Demo case created", "case": case, "document_case": document_case}
 
 
-@app.post("/solar/proposals/from-document/{document_id}")
-async def create_solar_proposal(document_id: str, request: SolarProposalCreateRequest = SolarProposalCreateRequest()):
+@app.post("/cases/from-document/{document_id}")
+async def create_document_case(document_id: str, request: CaseCreateRequest = CaseCreateRequest()):
     document = processor.get_document(document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     try:
-        proposal = solar_service.create_from_document(
+        return case_service.create_from_document(
             document=document,
             client_info=request.client_info,
-            site_data=request.site_data,
-            assumptions=request.assumptions,
+            metadata=request.metadata,
+            review_settings=request.review_settings,
             actor=request.actor,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return proposal
 
 
-@app.get("/solar/proposals")
-async def list_solar_proposals():
-    return {"proposals": solar_service.list_proposals(), "status_flow": STATUS_FLOW}
+@app.get("/cases")
+async def list_document_cases():
+    return {"cases": case_service.list_cases(), "status_flow": STATUS_FLOW}
 
 
-@app.get("/solar/proposals/board")
-async def solar_status_board():
-    proposals = solar_service.list_proposals()
+@app.get("/cases/board")
+async def case_status_board():
+    cases = case_service.list_cases()
     board = {status: [] for status in STATUS_FLOW}
-    for proposal in proposals:
-        board.setdefault(proposal.get("status", "New"), []).append(proposal)
+    for item in cases:
+        board.setdefault(item.get("status", "New"), []).append(item)
     return {"board": board, "status_flow": STATUS_FLOW}
 
 
-@app.get("/solar/proposals/{proposal_id}")
-async def get_solar_proposal(proposal_id: str):
-    proposal = solar_service.get_proposal(proposal_id)
-    if not proposal:
-        raise HTTPException(status_code=404, detail="Proposal not found")
-    return proposal
+@app.get("/cases/{case_id}")
+async def get_document_case(case_id: str):
+    item = case_service.get_case(case_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return item
 
 
-@app.patch("/solar/proposals/{proposal_id}/status")
-async def update_solar_proposal_status(proposal_id: str, request: ProposalStatusRequest):
+@app.patch("/cases/{case_id}/status")
+async def update_case_status(case_id: str, request: CaseStatusRequest):
     try:
-        return solar_service.update_status(proposal_id, request.status, actor=request.actor, note=request.note)
+        return case_service.update_status(case_id, request.status, actor=request.actor, note=request.note)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.patch("/solar/proposals/{proposal_id}/assumptions")
-async def update_solar_proposal_assumptions(proposal_id: str, request: AssumptionsUpdateRequest):
+@app.patch("/cases/{case_id}/settings")
+async def update_case_settings(case_id: str, request: SettingsUpdateRequest):
     try:
-        return solar_service.update_assumptions(proposal_id, request.assumptions, actor=request.actor)
+        return case_service.update_settings(case_id, request.review_settings, actor=request.actor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.patch("/solar/proposals/{proposal_id}/extraction")
-async def update_solar_proposal_extraction(proposal_id: str, request: ExtractionCorrectionRequest):
+@app.patch("/cases/{case_id}/extraction")
+async def update_case_extraction(case_id: str, request: ExtractionCorrectionRequest):
     patch = {"fields": request.fields}
-    if request.monthly_consumption is not None:
-        patch["monthly_consumption"] = request.monthly_consumption
+    if request.period_metrics is not None:
+        patch["period_metrics"] = request.period_metrics
     try:
-        return solar_service.update_extraction(proposal_id, patch, actor=request.actor)
+        return case_service.update_extraction(case_id, patch, actor=request.actor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/solar/proposals/{proposal_id}/diff")
-async def diff_solar_proposal_versions(proposal_id: str, left: str = "v1", right: str = "v2"):
+@app.get("/cases/{case_id}/diff")
+async def diff_case_versions(case_id: str, left: str = "v1", right: str = "v2"):
     try:
-        return solar_service.diff_versions(proposal_id, left, right)
+        return case_service.diff_versions(case_id, left, right)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/solar/proposals/{proposal_id}/audit")
-async def solar_proposal_audit(proposal_id: str):
-    return {"events": solar_service.audit_log(proposal_id)}
+@app.get("/cases/{case_id}/audit")
+async def case_audit(case_id: str):
+    return {"events": case_service.audit_log(case_id)}
 
 
-@app.post("/solar/proposals/{proposal_id}/proposal-text")
-async def generate_polished_solar_proposal_text(proposal_id: str):
-    proposal = solar_service.get_proposal(proposal_id)
-    if not proposal:
-        raise HTTPException(status_code=404, detail="Proposal not found")
-    prompt = f"""You are drafting a concise commercial solar PPA proposal for commercial review.
-Use only the supplied structured data. Do not change the numeric estimates.
-Return a clean proposal draft with sections: Executive Summary, Consumption Review, Proposed System, Savings Estimate, Risks/Assumptions, Next Steps.
+@app.post("/cases/{case_id}/report-text")
+async def generate_polished_case_report(case_id: str):
+    item = case_service.get_case(case_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Case not found")
+    prompt = f"""You are drafting a concise operational document review report.
+Use only the supplied structured data. Do not change extracted values.
+Return a clean report with sections: Executive Summary, Extracted Fields, Risks, Missing Items, Recommended Next Actions.
 
-Structured proposal data:
-{proposal}
+Structured case data:
+{item}
 """
     answer = await _ask_ollama(prompt)
-    return {"proposal_id": proposal_id, "model": OLLAMA_MODEL, "proposal_text": answer}
+    return {"case_id": case_id, "model": OLLAMA_MODEL, "report_text": answer}
 
 
-
-@app.get("/solar/proposals/{proposal_id}/export-pdf")
-async def export_solar_proposal_pdf(proposal_id: str):
-    proposal = solar_service.get_proposal(proposal_id)
-    if not proposal:
-        raise HTTPException(status_code=404, detail="Proposal not found")
+@app.get("/cases/{case_id}/export-pdf")
+async def export_case_pdf(case_id: str):
+    item = case_service.get_case(case_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Case not found")
     try:
-        pdf_path = build_proposal_pdf(proposal, REPORT_DIR)
+        pdf_path = build_case_report_pdf(item, REPORT_DIR)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {exc}") from exc
     return FileResponse(pdf_path, media_type="application/pdf", filename=pdf_path.name)
-
-@app.get("/download/report/{document_id}")
-async def download_report(document_id: str):
-    report_path = REPORT_DIR / f"{document_id}.md"
-    if not report_path.exists():
-        raise HTTPException(status_code=404, detail="Report not found")
-    return FileResponse(report_path, media_type="text/markdown", filename=f"report_{document_id}.md")
 
 
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
-        "mode": "solar-proposal-automation",
+        "mode": "local-documentops-automation",
         "model_required": False,
         "embeddings_enabled": processor.embeddings_enabled,
         "tables_enabled": processor.tables_enabled,
         "ollama_url": OLLAMA_URL,
         "ollama_model": OLLAMA_MODEL,
-        "proposal_count": len(solar_service.list_proposals()),
+        "case_count": len(case_service.list_cases()),
     }
 
 
 @app.get("/stats")
 async def get_stats():
-    reports = list(REPORT_DIR.glob("*.md"))
+    reports = list(REPORT_DIR.glob("*.pdf")) + list(REPORT_DIR.glob("*.md"))
     uploads = list(UPLOAD_DIR.glob("*.pdf"))
-    return {
-        "documents": len(processor.list_documents()),
-        "proposals": len(solar_service.list_proposals()),
-        "reports": len(reports),
-        "pending_uploads": len(uploads),
-        "storage": {
-            "reports_mb": sum(path.stat().st_size for path in reports) / (1024 * 1024),
-            "uploads_mb": sum(path.stat().st_size for path in uploads) / (1024 * 1024),
-        },
-    }
+    return {"documents": len(processor.list_documents()), "cases": len(case_service.list_cases()), "reports": len(reports), "pending_uploads": len(uploads)}
 
 
 @app.delete("/cleanup")
@@ -358,20 +334,20 @@ async def cleanup_storage():
 @app.get("/")
 async def root():
     return {
-        "name": "Solar Proposal Automation API",
-        "version": "4.0.0",
-        "description": "Bill-to-proposal workflow: PDF extraction, confidence scoring, assumptions, solar sizing, savings, underwriting review, approvals, and Qwen/Ollama proposal text.",
+        "name": "Local DocumentOps Automation API",
+        "version": "5.0.0",
+        "description": "Local document automation: PDF extraction, confidence scoring, review queue, RAG search, workflow handoff, audit logs, and generated reports.",
         "endpoints": {
             "POST /process": "Upload PDFs and receive extracted chunks, QR data, tables, validation, and report IDs",
-            "POST /solar/proposals/from-document/{document_id}": "Create a solar proposal from a processed utility bill",
-            "GET /solar/proposals/board": "CRM-style status board",
-            "POST /demo/seed": "Create a realistic demo proposal without uploading a PDF",
-            "PATCH /solar/proposals/{proposal_id}/assumptions": "Edit assumptions and create a new proposal version",
-            "PATCH /solar/proposals/{proposal_id}/extraction": "Correct extracted fields and monthly kWh, then recalculate",
-            "GET /solar/proposals/{proposal_id}/diff": "Compare proposal versions",
-            "PATCH /solar/proposals/{proposal_id}/status": "Move proposal through New, Parsed, Needs Review, Approved, Sent",
-            "POST /solar/proposals/{proposal_id}/proposal-text": "Generate polished Qwen proposal text",
-            "GET /solar/proposals/{proposal_id}/export-pdf": "Export a branded PDF proposal",
+            "POST /demo/seed": "Create a demo document case",
+            "POST /cases/from-document/{document_id}": "Create a document case from a processed PDF",
+            "GET /cases/board": "Status board grouped by workflow stage",
+            "PATCH /cases/{case_id}/extraction": "Correct extracted fields and structured metrics",
+            "PATCH /cases/{case_id}/settings": "Edit review thresholds and create a new version",
+            "GET /cases/{case_id}/diff": "Compare case versions",
+            "PATCH /cases/{case_id}/status": "Move case through New, Parsed, Needs Review, Approved, Sent",
+            "POST /cases/{case_id}/report-text": "Generate polished local LLM report text",
+            "GET /cases/{case_id}/export-pdf": "Export a PDF case report",
         },
     }
 
@@ -391,7 +367,7 @@ async def _ask_ollama(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": "You are careful, concise, and evidence-bound. Never invent document facts or change deterministic financial calculations."},
+            {"role": "system", "content": "You are careful, concise, and evidence-bound. Never invent document facts or alter extracted values."},
             {"role": "user", "content": prompt},
         ],
         "options": {"temperature": 0.1, "num_ctx": 8192},
