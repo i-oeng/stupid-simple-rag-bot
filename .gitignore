@@ -13,11 +13,17 @@ htmlcov/
 venv/
 env/
 
-# Local app storage
+# Local app storage and generated state
 backend/storage/
 storage/
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
+
+# Streamlit local state
+.streamlit/secrets.toml
+.streamlit/config.toml
 
 # Model/cache artifacts
 models/
@@ -28,10 +34,12 @@ models/
 *.safetensors
 .cache/
 
-# Uploaded/generated documents
+# Uploaded/generated documents and reports
 *.zip
 processed_*.pdf
 annotations.json
+proposal_*.md
+report_*.md
 
 # Secrets and local config
 .env

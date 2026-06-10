@@ -1,22 +1,23 @@
 import os
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 from document_processor import LocalDocumentProcessor
+from solar_proposal import STATUS_FLOW, SolarProposalService
 from utils import cleanup_old_files, ensure_directories
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 
-app = FastAPI(title="Local Document Processing API", version="3.1.0")
+app = FastAPI(title="Solar Proposal Automation API", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +33,7 @@ UPLOAD_DIR = STORAGE_DIR / "uploads"
 REPORT_DIR = STORAGE_DIR / "reports"
 ensure_directories(STORAGE_DIR)
 processor = LocalDocumentProcessor(STORAGE_DIR)
+solar_service = SolarProposalService(STORAGE_DIR)
 
 
 class AskRequest(BaseModel):
@@ -43,10 +45,28 @@ class SummarizeRequest(BaseModel):
     max_chunks: int = 8
 
 
+class SolarProposalCreateRequest(BaseModel):
+    client_info: Dict[str, Any] = Field(default_factory=dict)
+    site_data: Dict[str, Any] = Field(default_factory=dict)
+    assumptions: Dict[str, Any] = Field(default_factory=dict)
+    actor: str = "user"
+
+
+class ProposalStatusRequest(BaseModel):
+    status: str
+    actor: str = "user"
+    note: str = ""
+
+
+class AssumptionsUpdateRequest(BaseModel):
+    assumptions: Dict[str, Any]
+    actor: str = "user"
+
+
 @app.on_event("startup")
 async def startup_event():
     cleanup_old_files(UPLOAD_DIR)
-    print("Local document processor started")
+    print("Solar proposal automation API started")
     print(f"Embeddings enabled: {processor.embeddings_enabled}")
     print(f"Tables enabled: {processor.tables_enabled}")
 
@@ -158,6 +178,96 @@ Document excerpts:
     return {"document_id": document_id, "summary": answer, "validation": validation, "model": OLLAMA_MODEL}
 
 
+@app.get("/solar/assumptions/default")
+async def default_solar_assumptions():
+    return solar_service.default_assumptions()
+
+
+@app.post("/solar/proposals/from-document/{document_id}")
+async def create_solar_proposal(document_id: str, request: SolarProposalCreateRequest = SolarProposalCreateRequest()):
+    document = processor.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        proposal = solar_service.create_from_document(
+            document=document,
+            client_info=request.client_info,
+            site_data=request.site_data,
+            assumptions=request.assumptions,
+            actor=request.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return proposal
+
+
+@app.get("/solar/proposals")
+async def list_solar_proposals():
+    return {"proposals": solar_service.list_proposals(), "status_flow": STATUS_FLOW}
+
+
+@app.get("/solar/proposals/board")
+async def solar_status_board():
+    proposals = solar_service.list_proposals()
+    board = {status: [] for status in STATUS_FLOW}
+    for proposal in proposals:
+        board.setdefault(proposal.get("status", "New"), []).append(proposal)
+    return {"board": board, "status_flow": STATUS_FLOW}
+
+
+@app.get("/solar/proposals/{proposal_id}")
+async def get_solar_proposal(proposal_id: str):
+    proposal = solar_service.get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return proposal
+
+
+@app.patch("/solar/proposals/{proposal_id}/status")
+async def update_solar_proposal_status(proposal_id: str, request: ProposalStatusRequest):
+    try:
+        return solar_service.update_status(proposal_id, request.status, actor=request.actor, note=request.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/solar/proposals/{proposal_id}/assumptions")
+async def update_solar_proposal_assumptions(proposal_id: str, request: AssumptionsUpdateRequest):
+    try:
+        return solar_service.update_assumptions(proposal_id, request.assumptions, actor=request.actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/solar/proposals/{proposal_id}/diff")
+async def diff_solar_proposal_versions(proposal_id: str, left: str = "v1", right: str = "v2"):
+    try:
+        return solar_service.diff_versions(proposal_id, left, right)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/solar/proposals/{proposal_id}/audit")
+async def solar_proposal_audit(proposal_id: str):
+    return {"events": solar_service.audit_log(proposal_id)}
+
+
+@app.post("/solar/proposals/{proposal_id}/proposal-text")
+async def generate_polished_solar_proposal_text(proposal_id: str):
+    proposal = solar_service.get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    prompt = f"""You are drafting a concise commercial solar PPA proposal for founder review.
+Use only the supplied structured data. Do not change the numeric estimates.
+Return a clean proposal draft with sections: Executive Summary, Consumption Review, Proposed System, Savings Estimate, Risks/Assumptions, Next Steps.
+
+Structured proposal data:
+{proposal}
+"""
+    answer = await _ask_ollama(prompt)
+    return {"proposal_id": proposal_id, "model": OLLAMA_MODEL, "proposal_text": answer}
+
+
 @app.get("/download/report/{document_id}")
 async def download_report(document_id: str):
     report_path = REPORT_DIR / f"{document_id}.md"
@@ -170,12 +280,13 @@ async def download_report(document_id: str):
 async def health_check():
     return {
         "status": "healthy",
-        "mode": "local-document-processing",
+        "mode": "solar-proposal-automation",
         "model_required": False,
         "embeddings_enabled": processor.embeddings_enabled,
         "tables_enabled": processor.tables_enabled,
         "ollama_url": OLLAMA_URL,
         "ollama_model": OLLAMA_MODEL,
+        "proposal_count": len(solar_service.list_proposals()),
     }
 
 
@@ -185,6 +296,7 @@ async def get_stats():
     uploads = list(UPLOAD_DIR.glob("*.pdf"))
     return {
         "documents": len(processor.list_documents()),
+        "proposals": len(solar_service.list_proposals()),
         "reports": len(reports),
         "pending_uploads": len(uploads),
         "storage": {
@@ -203,17 +315,17 @@ async def cleanup_storage():
 @app.get("/")
 async def root():
     return {
-        "name": "Local Document Processing API",
-        "version": "3.1.0",
-        "description": "Local PDF text extraction, QR detection, table extraction, embeddings, validation, and Qwen/Ollama document QA.",
+        "name": "Solar Proposal Automation API",
+        "version": "4.0.0",
+        "description": "Bill-to-proposal workflow: PDF extraction, confidence scoring, assumptions, solar sizing, savings, underwriting review, approvals, and Qwen/Ollama proposal text.",
         "endpoints": {
             "POST /process": "Upload PDFs and receive extracted chunks, QR data, tables, validation, and report IDs",
-            "GET /documents": "List processed documents",
-            "GET /search?q=...": "Search indexed document chunks locally",
-            "GET /validate/{document_id}": "Run rule-based validation",
-            "POST /ask": "Ask Qwen over retrieved document chunks",
-            "POST /summarize/{document_id}": "Generate a Qwen summary using extracted evidence",
-            "GET /download/report/{document_id}": "Download a Markdown processing report",
+            "POST /solar/proposals/from-document/{document_id}": "Create a solar proposal from a processed utility bill",
+            "GET /solar/proposals/board": "CRM-style status board",
+            "PATCH /solar/proposals/{proposal_id}/assumptions": "Edit assumptions and create a new proposal version",
+            "GET /solar/proposals/{proposal_id}/diff": "Compare proposal versions",
+            "PATCH /solar/proposals/{proposal_id}/status": "Move proposal through New, Parsed, Needs Review, Approved, Sent",
+            "POST /solar/proposals/{proposal_id}/proposal-text": "Generate polished Qwen proposal text",
         },
     }
 
@@ -233,7 +345,7 @@ async def _ask_ollama(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": "You are careful, concise, and evidence-bound. Never invent document facts."},
+            {"role": "system", "content": "You are careful, concise, and evidence-bound. Never invent document facts or change deterministic financial calculations."},
             {"role": "user", "content": prompt},
         ],
         "options": {"temperature": 0.1, "num_ctx": 8192},
