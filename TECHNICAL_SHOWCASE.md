@@ -16,8 +16,9 @@ This project is a self-directed solar operations automation prototype. It explor
 | Versioning | Assumption updates and extraction corrections create proposal versions that can be compared |
 | Operational visibility | Pipeline MW, approved MW, review backlog, risk distribution, confidence, and proposal status tracking |
 | Client visibility | Monthly consumption, estimated solar production, grid usage, savings, and portfolio table |
-| Integrations | Telegram bot, n8n workflow notes, Supabase-ready persistence plan, FastAPI endpoints for external tools |
+| Integrations | Telegram bot, importable n8n workflow JSON, Supabase schema, FastAPI endpoints for external tools |
 | Testing | Pytest coverage for proposal creation, assumption diffing, and manual correction recalculation |
+| Deployment | Docker Compose setup for backend, dashboard, n8n, and optional Ollama |
 
 ## Why This Project Is Interesting
 
@@ -33,12 +34,14 @@ Utility bills and operational documents are messy, but business teams still need
 - Track status and audit events.
 - Show management pipeline visibility.
 - Show a client-facing energy view.
+- Import `automation/n8n_solar_workflow.json` to show a concrete automation workflow.
+- Use `supabase/schema.sql` to show the production data model.
 - Explain where n8n, Telegram, Supabase, and CRM integrations fit.
 
 ## Future Improvements
 
 - Export branded PDF proposals.
-- Add a real n8n workflow JSON export.
+- Connect the n8n workflow to real Telegram/Slack and CRM credentials.
 - Replace local JSON storage with Supabase Postgres.
 - Add auth and role-based review permissions.
 - Add fixtures for multiple real utility bill layouts.

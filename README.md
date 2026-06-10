@@ -61,6 +61,10 @@ cd C:\Users\user\Desktop\ragbot
 python -m streamlit run frontend_streamlit.py --server.port 8501
 ```
 
+## Model Choice
+
+Use `qwen3:8b` through Ollama for the best 8 GB VRAM demo balance. See `MODEL_GUIDE.md` for fallback models and deployment notes.
+
 ## Ubuntu Setup
 
 Install system basics:
@@ -80,7 +84,7 @@ Install Ollama:
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen3.5:9b
+ollama pull qwen3:8b
 ```
 
 Set up the app:
@@ -99,7 +103,7 @@ Start the backend:
 cd ~/ragbot/backend
 source ../.venv/bin/activate
 export OLLAMA_URL=http://127.0.0.1:11434
-export OLLAMA_MODEL=qwen3.5:9b
+export OLLAMA_MODEL=qwen3:8b
 python app.py
 ```
 
@@ -119,6 +123,14 @@ http://localhost:8501
 http://localhost:8000/docs
 ```
 
+## Docker Run
+
+```bash
+docker compose up --build
+```
+
+This starts the backend, Streamlit dashboard, and n8n. See `DOCKER.md` for the optional Ollama profile and runbook.
+
 ## Main API Endpoints
 
 - `POST /process` - upload PDFs and extract text, tables, QR codes, validation data
@@ -132,6 +144,7 @@ http://localhost:8000/docs
 - `GET /solar/proposals/{proposal_id}/diff?left=v1&right=v2` - proposal diff mode
 - `GET /solar/proposals/{proposal_id}/audit` - audit log
 - `POST /solar/proposals/{proposal_id}/proposal-text` - generate polished proposal copy with Qwen/Ollama
+- `GET /solar/proposals/{proposal_id}/export-pdf` - export a proposal PDF
 
 ## Tests
 
@@ -158,7 +171,7 @@ Telegram is convenient for demos, but uploaded files pass through Telegram trans
 
 ## n8n Automation
 
-See `automation/n8n_solar_workflow.md` for a workflow sketch:
+See `automation/n8n_solar_workflow.json` for an importable workflow and `automation/README.md` for setup notes:
 
 - Trigger on new bill upload
 - Call `/process`
@@ -167,12 +180,16 @@ See `automation/n8n_solar_workflow.md` for a workflow sketch:
 - Create/update CRM record
 - Send proposal summary to Telegram/Slack/email
 
+## Supabase Schema
+
+See `supabase/schema.sql` for a Postgres/Supabase model covering clients, sites, documents, chunks, proposals, versions, audit events, workflow events, and vector embeddings.
+
 ## What To Do Next
 
 - Use the demo button to rehearse the pitch from bill to review to proposal.
 - Collect 3-5 real utility bills and compare the extracted monthly consumption against manual values.
-- Add Supabase Postgres later if you want multi-user auth, durable CRM records, and vector search in one hosted database.
-- Add n8n only after the dashboard flow feels good; it should automate a proven workflow, not hide an unfinished one.
+- Use `supabase/schema.sql` when you want to move from local JSON storage to Supabase Postgres.
+- Import the n8n workflow and connect real Telegram/Slack/CRM credentials when you want live automation.
 
 ## Notes
 

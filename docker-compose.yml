@@ -1,0 +1,62 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: solar-proposal-backend
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+    volumes:
+      - backend-storage:/app/storage
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: solar-proposal-dashboard
+    environment:
+      API_URL: http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: solar-proposal-n8n
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      BACKEND_URL: http://backend:8000
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./automation:/files/automation:ro
+    depends_on:
+      - backend
+    ports:
+      - "5678:5678"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: solar-proposal-ollama
+    profiles: ["ollama"]
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  backend-storage:
+  n8n-data:
+  ollama-data:

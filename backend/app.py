@@ -17,7 +17,7 @@ from solar_proposal import STATUS_FLOW, SolarProposalService
 from utils import cleanup_old_files, ensure_directories
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 
 app = FastAPI(title="Solar Proposal Automation API", version="4.0.0")
 
@@ -194,13 +194,13 @@ async def default_solar_assumptions():
 @app.post("/demo/seed")
 async def seed_demo_proposal():
     proposal = solar_service.create_from_document(
-        document=demo_document(),
-        client_info=demo_client_info(),
-        site_data=demo_site_data(),
-        assumptions=demo_assumptions(),
+        document=demo_document(case),
+        client_info=demo_client_info(case),
+        site_data=demo_site_data(case),
+        assumptions=demo_assumptions(case),
         actor="demo_seed",
     )
-    return {"message": "Demo proposal created", "proposal": proposal}
+    return {"message": "Demo proposal created", "case": case, "proposal": proposal}
 
 
 @app.post("/solar/proposals/from-document/{document_id}")
@@ -288,7 +288,7 @@ async def generate_polished_solar_proposal_text(proposal_id: str):
     proposal = solar_service.get_proposal(proposal_id)
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    prompt = f"""You are drafting a concise commercial solar PPA proposal for founder review.
+    prompt = f"""You are drafting a concise commercial solar PPA proposal for commercial review.
 Use only the supplied structured data. Do not change the numeric estimates.
 Return a clean proposal draft with sections: Executive Summary, Consumption Review, Proposed System, Savings Estimate, Risks/Assumptions, Next Steps.
 

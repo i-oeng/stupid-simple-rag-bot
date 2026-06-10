@@ -63,3 +63,25 @@ def test_manual_correction_recalculates_and_audits(tmp_path):
     assert updated["extraction"]["fields"]["tariff"]["value"] == "Corrected Commercial TOU"
     assert updated["versions"][-1]["label"] == "Manual correction"
     assert any(event["action"] == "extraction_corrected" for event in audit)
+
+def test_demo_fixture_variants_have_expected_review_profiles(tmp_path):
+    service = make_service(tmp_path)
+    clean = service.create_from_document(demo_document("clean"), demo_client_info("clean"), demo_site_data("clean"), demo_assumptions("clean"))
+    messy = service.create_from_document(demo_document("messy"), demo_client_info("messy"), demo_site_data("messy"), demo_assumptions("messy"))
+    incomplete = service.create_from_document(demo_document("incomplete"), demo_client_info("incomplete"), demo_site_data("incomplete"), demo_assumptions("incomplete"))
+
+    assert len(clean["extraction"]["monthly_consumption"]) == 12
+    assert len(messy["extraction"]["monthly_consumption"]) == 12
+    assert len(incomplete["extraction"]["monthly_consumption"]) == 3
+    assert incomplete["underwriting_checklist"]["risk_level"] == "high"
+
+def test_proposal_pdf_export(tmp_path):
+    from proposal_pdf import build_proposal_pdf
+
+    service = make_service(tmp_path)
+    proposal = service.create_from_document(demo_document("clean"), demo_client_info("clean"), demo_site_data("clean"), demo_assumptions("clean"))
+    pdf_path = build_proposal_pdf(proposal, tmp_path / "reports")
+
+    assert pdf_path.exists()
+    assert pdf_path.suffix == ".pdf"
+    assert pdf_path.stat().st_size > 1000
