@@ -577,7 +577,7 @@ class DocumentCaseService:
 
     def _find_value_in_text(self, text: str, labels: List[str]) -> Optional[str]:
         for label in sorted(labels, key=len, reverse=True):
-            pattern = re.compile(rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*(.{{0,180}})")
+            pattern = re.compile(rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*([\s\S]{{0,180}})")
             for match in pattern.finditer(text):
                 value = self._truncate_at_stop_label(match.group(1), current_label=label)
                 value = self._clean_value(value)
@@ -587,7 +587,7 @@ class DocumentCaseService:
 
     def _snippets_after_label(self, text: str, label: str) -> List[str]:
         snippets = []
-        pattern = re.compile(rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*(.{{0,180}})")
+        pattern = re.compile(rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*([\s\S]{{0,220}})")
         for match in pattern.finditer(text):
             snippets.append(self._truncate_at_stop_label(match.group(1), current_label=label, keep_money_context=True))
         return snippets
@@ -623,6 +623,8 @@ class DocumentCaseService:
         numeric_matches = list(STRICT_NUMBER_RE.finditer(snippet))
         if not numeric_matches:
             return None
+        if self._looks_like_date_without_amount(snippet, numeric_matches):
+            return None
         decimal_values = []
         all_values = []
         for match in numeric_matches:
@@ -637,6 +639,13 @@ class DocumentCaseService:
                 decimal_values.append(amount)
         values = decimal_values or all_values
         return values[-1] if values else None
+
+    def _looks_like_date_without_amount(self, snippet: str, numeric_matches: List[re.Match]) -> bool:
+        if any("." in match.group(0) for match in numeric_matches):
+            return False
+        if re.search(rf"(?i){MONTH_LOOKAHEAD_RE}\s+\d{{1,2}},?\s+\d{{4}}", snippet):
+            return True
+        return bool(re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", snippet))
 
     def _usage_column_units(self, cells: List[str]) -> Dict[int, str]:
         columns = {}

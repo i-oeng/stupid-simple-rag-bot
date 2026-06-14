@@ -10,6 +10,7 @@ zxing-cpp>=2.2.0,<2.4.0
 opencv-python-headless>=4.10.0.84,<4.13.0
 Pillow>=11.0.0,<12.0.0
 numpy>=1.26.4,<2.3.0
+pytesseract>=0.3.13,<0.4.0
 
 # Local embeddings and vector search
 chromadb>=0.5.23,<1.1.0

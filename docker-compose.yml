@@ -7,6 +7,10 @@ services:
     environment:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OCR_ENABLED: ${OCR_ENABLED:-true}
+      OCR_DPI: ${OCR_DPI:-220}
+      OCR_LANG: ${OCR_LANG:-eng}
+      OCR_FORCE: ${OCR_FORCE:-false}
     volumes:
       - backend-storage:/app/storage
     ports:

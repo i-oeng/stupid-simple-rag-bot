@@ -54,7 +54,7 @@ python -m streamlit run frontend_streamlit.py --server.port 8501
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv python3-pip curl git
+sudo apt install -y python3-venv python3-pip curl git tesseract-ocr tesseract-ocr-eng
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen3:8b
 
@@ -72,6 +72,8 @@ cd ~/ragbot/backend
 source ../.venv/bin/activate
 export OLLAMA_URL=http://127.0.0.1:11434
 export OLLAMA_MODEL=qwen3:8b
+export OCR_ENABLED=true
+export OCR_DPI=220
 python app.py
 ```
 
@@ -92,7 +94,7 @@ Open `http://localhost:8501` and `http://localhost:8000/docs`.
 docker compose up --build
 ```
 
-This starts the backend, dashboard, and n8n. See `DOCKER.md` for the optional Ollama profile.
+This starts the backend, dashboard, and n8n. The backend image includes Tesseract OCR for scanned PDFs. See `DOCKER.md` for the optional Ollama profile.
 
 ## Main API Endpoints
 

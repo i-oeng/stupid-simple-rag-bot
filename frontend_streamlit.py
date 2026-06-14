@@ -379,6 +379,7 @@ with intake_tab:
                 st.error(f"Qwen demo generation failed: {exc}")
         signal_rows = [
             {"signal": "PDF text extraction", "status": "active"},
+            {"signal": "OCR fallback", "status": "active" if health.get("ocr_available") else "off"},
             {"signal": "Table extraction", "status": "active" if health.get("tables_enabled") else "off"},
             {"signal": "Vector search", "status": "active" if health.get("embeddings_enabled") else "off"},
             {"signal": "QR/stamp/signature/logo detection", "status": "local heuristic"},

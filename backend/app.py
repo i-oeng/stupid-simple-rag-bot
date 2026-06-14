@@ -84,6 +84,7 @@ async def startup_event():
     print("Local DocumentOps automation API started")
     print(f"Embeddings enabled: {processor.embeddings_enabled}")
     print(f"Tables enabled: {processor.tables_enabled}")
+    print(f"OCR available: {processor.ocr_available}")
 
 
 @app.post("/process")
@@ -116,6 +117,7 @@ async def process_pdfs(files: List[UploadFile] = File(...)):
         "visual_marker_detection": "local_cv_heuristic",
         "embeddings_enabled": processor.embeddings_enabled,
         "tables_enabled": processor.tables_enabled,
+        "ocr_available": processor.ocr_available,
         "documents": results,
     })
 
@@ -380,6 +382,7 @@ async def health_check():
         "model_required": False,
         "embeddings_enabled": processor.embeddings_enabled,
         "tables_enabled": processor.tables_enabled,
+        "ocr_available": processor.ocr_available,
         "ollama_url": OLLAMA_URL,
         "ollama_model": OLLAMA_MODEL,
         "case_count": len(case_service.list_cases()),

@@ -1,10 +1,12 @@
 import hashlib
 import json
+import os
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import fitz
 import cv2
@@ -23,11 +25,17 @@ try:
 except Exception:
     pdfplumber = None
 
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
+
 
 DATE_RE = re.compile(r"\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})\b")
 AMOUNT_RE = re.compile(r"(?i)(?:\$|usd|eur|kzt|₸)?\s?\d{1,3}(?:[ ,.]\d{3})*(?:[.,]\d{2})?\s?(?:\$|usd|eur|kzt|₸)?")
 UTILITY_TERMS = {"utility", "electric", "water", "gas", "meter", "account", "billing", "invoice", "amount due", "tariff"}
 CONTRACT_TERMS = {"contract", "agreement", "party", "parties", "signature", "terms", "effective date", "obligation"}
+PROCESSOR_VERSION = "hybrid-ocr-v2"
 
 
 def marker_counts(markers: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -48,6 +56,7 @@ class ProcessedDocument:
     qr_codes: List[Dict[str, Any]]
     visual_markers: List[Dict[str, Any]]
     tables: List[Dict[str, Any]]
+    ocr_pages: List[Dict[str, Any]]
     report_path: Path
     reused_existing: bool = False
 
@@ -56,11 +65,13 @@ class ProcessedDocument:
             "document_id": self.document_id,
             "filename": self.filename,
             "file_hash": self.file_hash,
+            "processor_version": PROCESSOR_VERSION,
             "pages": self.pages,
             "chunks": self.chunks,
             "qr_codes": self.qr_codes,
             "visual_markers": self.visual_markers,
             "tables": self.tables,
+            "ocr_pages": self.ocr_pages,
             "report_path": str(self.report_path),
             "reused_existing": self.reused_existing,
             "summary": {
@@ -69,9 +80,18 @@ class ProcessedDocument:
                 "visual_marker_count": len(self.visual_markers),
                 "visual_marker_types": marker_counts(self.visual_markers),
                 "table_count": len(self.tables),
+                "ocr_page_count": len(self.ocr_pages),
+                "extraction_methods": self._method_counts(),
                 "has_text": any(chunk["text"].strip() for chunk in self.chunks),
             },
         }
+
+    def _method_counts(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for chunk in self.chunks:
+            method = chunk.get("extraction_method") or "unknown"
+            counts[method] = counts.get(method, 0) + 1
+        return counts
 
 
 class LocalDocumentProcessor:
@@ -82,6 +102,19 @@ class LocalDocumentProcessor:
         self.metadata_path = storage_dir / "documents.json"
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self.vector_dir.mkdir(parents=True, exist_ok=True)
+        self.ocr_enabled = os.getenv("OCR_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+        self.ocr_force = os.getenv("OCR_FORCE", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.ocr_lang = os.getenv("OCR_LANG", "eng")
+        self.ocr_psm = os.getenv("OCR_PSM", "6")
+        try:
+            self.ocr_dpi = int(os.getenv("OCR_DPI", "220"))
+        except ValueError:
+            self.ocr_dpi = 220
+        try:
+            self.ocr_min_native_chars = int(os.getenv("OCR_MIN_NATIVE_CHARS", "80"))
+        except ValueError:
+            self.ocr_min_native_chars = 80
+        self.tesseract_path = shutil.which("tesseract")
 
         self.embedding_model = None
         self.collection = None
@@ -102,6 +135,10 @@ class LocalDocumentProcessor:
     def tables_enabled(self) -> bool:
         return pdfplumber is not None
 
+    @property
+    def ocr_available(self) -> bool:
+        return bool(self.ocr_enabled and pytesseract is not None and self.tesseract_path)
+
     def process_pdf(self, pdf_path: Path) -> ProcessedDocument:
         file_hash = self._hash_file(pdf_path)
         existing = self._find_by_hash(file_hash)
@@ -114,15 +151,18 @@ class LocalDocumentProcessor:
         chunks: List[Dict[str, Any]] = []
         qr_codes: List[Dict[str, Any]] = []
         visual_markers: List[Dict[str, Any]] = []
+        ocr_pages: List[Dict[str, Any]] = []
         page_count = 0
 
         try:
             page_count = len(doc)
             for page_index, page in enumerate(doc):
                 page_number = page_index + 1
-                text = page.get_text("text").strip()
+                text, extraction_method, extraction_note = self._extract_page_text(page)
+                if extraction_method.startswith("ocr"):
+                    ocr_pages.append({"page": page_number, "method": extraction_method, "note": extraction_note})
                 if text:
-                    chunks.extend(self._chunk_text(document_id, pdf_path.name, page_number, text))
+                    chunks.extend(self._chunk_text(document_id, pdf_path.name, page_number, text, extraction_method))
                 qr_codes.extend(self._detect_qr_codes(page, page_number))
                 visual_markers.extend(self._detect_visual_markers(page, page_number))
         finally:
@@ -144,6 +184,7 @@ class LocalDocumentProcessor:
             qr_codes=qr_codes,
             visual_markers=visual_markers,
             tables=tables,
+            ocr_pages=ocr_pages,
             report_path=report_path,
         ).to_dict()
         record["validation"] = validation
@@ -186,6 +227,10 @@ class LocalDocumentProcessor:
     def validate_payload(self, chunks: List[Dict[str, Any]], qr_codes: List[Dict[str, Any]], tables: List[Dict[str, Any]], visual_markers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         visual_markers = visual_markers or []
         text = "\n".join(chunk.get("text", "") for chunk in chunks).lower()
+        method_counts: Dict[str, int] = {}
+        for chunk in chunks:
+            method = chunk.get("extraction_method") or "unknown"
+            method_counts[method] = method_counts.get(method, 0) + 1
         dates = sorted(set(DATE_RE.findall(text)))[:20]
         amounts = sorted(set(match.strip() for match in AMOUNT_RE.findall(text) if any(char.isdigit() for char in match)))[:20]
         utility_score = sum(1 for term in UTILITY_TERMS if term in text)
@@ -203,6 +248,7 @@ class LocalDocumentProcessor:
             {"name": "dates", "status": "pass" if dates else "missing", "evidence": dates[:5]},
             {"name": "amounts", "status": "pass" if amounts else "missing", "evidence": amounts[:5]},
             {"name": "tables", "status": "pass" if tables else "missing", "evidence": f"{len(tables)} table(s)"},
+            {"name": "ocr", "status": "used" if any(key.startswith("ocr") for key in method_counts) else ("available" if self.ocr_available else "unavailable"), "evidence": method_counts or {"chunks": 0}},
         ]
 
         missing = [check["name"] for check in checks if check["status"] in {"missing", "fail"}]
@@ -222,6 +268,8 @@ class LocalDocumentProcessor:
                 "qr_codes": [item.get("text") for item in qr_codes],
                 "visual_markers": self._marker_counts(visual_markers),
             },
+            "extraction_methods": method_counts,
+            "ocr_available": self.ocr_available,
             "missing_items": missing,
             "disclaimer": "AI-assisted document review only. Not legal certification.",
         }
@@ -235,27 +283,95 @@ class LocalDocumentProcessor:
 
     def _find_by_hash(self, file_hash: str) -> Optional[Dict[str, Any]]:
         for record in self._load_records().values():
-            if record.get("file_hash") == file_hash:
+            if record.get("file_hash") == file_hash and record.get("processor_version") == PROCESSOR_VERSION:
                 return record
         return None
 
-    def _chunk_text(self, document_id: str, filename: str, page_number: int, text: str) -> List[Dict[str, Any]]:
-        words = text.split()
+    def _extract_page_text(self, page: fitz.Page) -> Tuple[str, str, str]:
+        native_text = page.get_text("text").strip()
+        native_score = self._text_quality(native_text)
+        if not self.ocr_force and native_score >= self.ocr_min_native_chars:
+            return native_text, "native", f"native_text_score={native_score}"
+        if not self.ocr_available:
+            method = "native_weak" if native_text else "missing"
+            reason = "tesseract_unavailable" if self.ocr_enabled else "ocr_disabled"
+            return native_text, method, f"{reason}; native_text_score={native_score}"
+
+        ocr_text, ocr_note = self._ocr_page(page)
+        ocr_score = self._text_quality(ocr_text)
+        if self.ocr_force and ocr_text:
+            return ocr_text.strip(), "ocr_forced", f"{ocr_note}; ocr_text_score={ocr_score}; native_text_score={native_score}"
+        if ocr_score > native_score:
+            return ocr_text.strip(), "ocr_fallback", f"{ocr_note}; ocr_text_score={ocr_score}; native_text_score={native_score}"
+        return native_text, "native_weak", f"ocr_not_better; {ocr_note}; ocr_text_score={ocr_score}; native_text_score={native_score}"
+
+    def _ocr_page(self, page: fitz.Page) -> Tuple[str, str]:
+        try:
+            zoom = max(self.ocr_dpi, 120) / 72
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            if pix.n > 3:
+                image = image[:, :, :3]
+            prepared = self._prepare_ocr_image(image)
+            config = f"--oem 3 --psm {self.ocr_psm}"
+            text = pytesseract.image_to_string(prepared, lang=self.ocr_lang, config=config)
+            return text.strip(), f"tesseract_dpi={self.ocr_dpi}; lang={self.ocr_lang}; psm={self.ocr_psm}"
+        except Exception as exc:
+            return "", f"ocr_error={exc}"
+
+    def _prepare_ocr_image(self, image: np.ndarray) -> np.ndarray:
+        if image.size == 0:
+            return image
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        gray = cv2.fastNlMeansDenoising(gray, None, 12, 7, 21)
+        height, width = gray.shape[:2]
+        if width < 1600:
+            scale = 1600 / max(width, 1)
+            gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 35, 11)
+
+    def _text_quality(self, text: str) -> int:
+        cleaned = str(text or "")
+        return sum(1 for char in cleaned if char.isalnum())
+
+    def _chunk_text(self, document_id: str, filename: str, page_number: int, text: str, extraction_method: str = "native") -> List[Dict[str, Any]]:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines()]
+        lines = [line for line in lines if line]
+        if not lines:
+            lines = [str(text or "").strip()]
         chunks = []
         chunk_size = 220
-        overlap = 40
-        start = 0
+        overlap_lines = 4
+        current_lines: List[str] = []
+        current_words = 0
         index = 0
 
-        while start < len(words):
-            end = min(start + chunk_size, len(words))
-            chunk_text = " ".join(words[start:end])
+        def append_chunk(lines_to_store: List[str]) -> None:
+            nonlocal index
+            chunk_text = "\n".join(lines_to_store).strip()
+            if not chunk_text:
+                return
             chunk_id = f"{document_id}-p{page_number}-c{index}"
-            chunks.append({"id": chunk_id, "document_id": document_id, "filename": filename, "page": page_number, "chunk_index": index, "text": chunk_text})
-            if end == len(words):
-                break
-            start = max(end - overlap, start + 1)
+            chunks.append({
+                "id": chunk_id,
+                "document_id": document_id,
+                "filename": filename,
+                "page": page_number,
+                "chunk_index": index,
+                "extraction_method": extraction_method,
+                "text": chunk_text,
+            })
             index += 1
+
+        for line in lines:
+            word_count = len(line.split())
+            if current_lines and current_words + word_count > chunk_size:
+                append_chunk(current_lines)
+                current_lines = current_lines[-overlap_lines:]
+                current_words = sum(len(item.split()) for item in current_lines)
+            current_lines.append(line)
+            current_words += word_count
+        append_chunk(current_lines)
         return chunks
 
     def _detect_qr_codes(self, page: fitz.Page, page_number: int) -> List[Dict[str, Any]]:
@@ -398,6 +514,8 @@ class LocalDocumentProcessor:
             f"QR codes detected: {len(qr_codes)}",
             f"Visual markers detected: {len(visual_markers)}",
             f"Tables extracted: {len(tables)}",
+            f"OCR available: {validation.get('ocr_available')}",
+            f"Extraction methods: `{validation.get('extraction_methods', {})}`",
             f"Validation risk: {validation.get('risk_level')}",
             "",
             "## QR Codes",
@@ -435,6 +553,7 @@ class LocalDocumentProcessor:
             qr_codes=record.get("qr_codes", []),
             visual_markers=record.get("visual_markers", []),
             tables=record.get("tables", []),
+            ocr_pages=record.get("ocr_pages", []),
             report_path=Path(record["report_path"]),
             reused_existing=record.get("reused_existing", False),
         )

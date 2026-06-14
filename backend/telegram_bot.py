@@ -75,6 +75,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"- status: {data.get('status')}\n"
         f"- embeddings: {data.get('embeddings_enabled')}\n"
         f"- tables: {data.get('tables_enabled')}\n"
+        f"- ocr: {data.get('ocr_available')}\n"
         f"- model: {data.get('ollama_model')}\n"
         f"- cases: {data.get('case_count', 0)}"
     )

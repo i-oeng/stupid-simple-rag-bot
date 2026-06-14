@@ -20,6 +20,27 @@ automation/n8n_documentops_workflow.json
 
 Inside n8n, `BACKEND_URL` is already set to `http://backend:8000`.
 
+## OCR Settings
+
+The backend image installs Tesseract OCR and uses it as a fallback when a PDF page has weak native text extraction.
+
+Useful environment variables:
+
+```bash
+OCR_ENABLED=true
+OCR_DPI=220
+OCR_LANG=eng
+OCR_FORCE=false
+```
+
+For difficult scanned documents, try one run with:
+
+```bash
+OCR_FORCE=true OCR_DPI=260 docker compose up --build
+```
+
+Higher DPI can improve OCR quality but slows processing.
+
 ## Optional Ollama Container
 
 ```bash
