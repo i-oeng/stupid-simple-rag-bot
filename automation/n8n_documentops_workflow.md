@@ -13,11 +13,14 @@ Use this workflow for the demo automation layer.
 2. HTTP Request: `POST http://localhost:8000/cases/from-document/{document_id}`
    - Include client info, metadata, review settings, and actor as JSON.
 3. IF: case status is `Needs Review`
-   - Send Telegram/Slack/email notification to a reviewer.
+   - True branch: build a Telegram/Slack/email notification payload, then continue to operations logging.
+   - False branch: skip the notification payload and continue directly to operations logging.
 4. Set: review notification payload
    - Include case ID, owner, document type, risk, next action, and review URL.
+   - This node only runs for cases that need human review.
 5. Set: operations row payload
    - Include case ID, status, risk, completeness, total amount, marker count, and source filename.
+   - This node runs for both true and false branches.
 6. Respond to webhook
    - Return case ID and status.
 

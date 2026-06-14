@@ -74,13 +74,13 @@
     {
       "parameters": {
         "assignments": {"assignments": [
-          {"name": "case_id", "type": "string", "value": "={{$json.case_id}}"},
-          {"name": "owner", "type": "string", "value": "={{$json.client_info.company || $json.metadata.owner || $json.source_filename || 'Unknown'}}"},
-          {"name": "stage", "type": "string", "value": "={{$json.status}}"},
-          {"name": "risk", "type": "string", "value": "={{$json.review_checklist.risk_level}}"},
-          {"name": "completeness", "type": "number", "value": "={{$json.case_summary.data_completeness}}"},
-          {"name": "total_amount", "type": "number", "value": "={{$json.case_summary.total_amount}}"},
-          {"name": "visual_markers", "type": "number", "value": "={{$json.case_summary.visual_markers_found}}"}
+          {"name": "case_id", "type": "string", "value": "={{$('Create Case').item.json.case_id}}"},
+          {"name": "owner", "type": "string", "value": "={{$('Create Case').item.json.client_info.company || $('Create Case').item.json.metadata.owner || $('Create Case').item.json.source_filename || 'Unknown'}}"},
+          {"name": "stage", "type": "string", "value": "={{$('Create Case').item.json.status}}"},
+          {"name": "risk", "type": "string", "value": "={{$('Create Case').item.json.review_checklist.risk_level}}"},
+          {"name": "completeness", "type": "number", "value": "={{$('Create Case').item.json.case_summary.data_completeness}}"},
+          {"name": "total_amount", "type": "number", "value": "={{$('Create Case').item.json.case_summary.total_amount}}"},
+          {"name": "visual_markers", "type": "number", "value": "={{$('Create Case').item.json.case_summary.visual_markers_found}}"}
         ]},
         "options": {}
       },
@@ -102,8 +102,9 @@
   "connections": {
     "Document Upload Webhook": {"main": [[{"node": "Process PDF", "type": "main", "index": 0}]]},
     "Process PDF": {"main": [[{"node": "Create Case", "type": "main", "index": 0}]]},
-    "Create Case": {"main": [[{"node": "Needs Review?", "type": "main", "index": 0}, {"node": "Operations Row Payload", "type": "main", "index": 0}]]},
-    "Needs Review?": {"main": [[{"node": "Review Notification Payload", "type": "main", "index": 0}], []]},
+    "Create Case": {"main": [[{"node": "Needs Review?", "type": "main", "index": 0}]]},
+    "Needs Review?": {"main": [[{"node": "Review Notification Payload", "type": "main", "index": 0}], [{"node": "Operations Row Payload", "type": "main", "index": 0}]]},
+    "Review Notification Payload": {"main": [[{"node": "Operations Row Payload", "type": "main", "index": 0}]]},
     "Operations Row Payload": {"main": [[{"node": "Respond to Upload", "type": "main", "index": 0}]]}
   },
   "settings": {"executionOrder": "v1"},
