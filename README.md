@@ -16,7 +16,8 @@ The app combines document extraction, QR/stamp/signature/logo detection, confide
 - Let reviewers correct fields and structured period metrics
 - Version settings and corrections so changes can be compared
 - Generate Markdown and short-name PDF case reports
-- Use Ollama + Qwen optionally for Q&A, summaries, and polished report text
+- Use Ollama + Qwen optionally for Q&A, summaries, polished report text, and tagged case chat
+- Chat with Qwen over selected/tagged cases and source excerpts
 - Include Streamlit, FastAPI, Telegram, n8n, Supabase schema, and Docker Compose
 
 ## Demo Flow
@@ -28,9 +29,10 @@ The app combines document extraction, QR/stamp/signature/logo detection, confide
 5. In `Review Queue`, inspect confidence scores, marker candidates, extracted fields, and checklist failures.
 6. Correct a field or structured metric.
 7. In `Review Settings`, change review thresholds or require a visual marker and review the settings history.
-8. In `Report`, review the automatically prepared Qwen draft and export Markdown/PDF.
-9. Move the case through `Needs Review -> Approved -> Sent`.
-10. In `Audit`, show traceability.
+8. In `Report`, review the automatically prepared Qwen draft and export the PDF.
+9. In `Qwen Chat`, tag one or more cases and ask operational questions across them.
+10. Move the case through `Needs Review -> Approved -> Sent`.
+11. In `Audit`, show traceability.
 
 ## Local Windows Run
 
@@ -111,6 +113,7 @@ This starts the backend, dashboard, and n8n. The backend image includes Tesserac
 - `GET /cases/{case_id}/diff?left=v1&right=v2` - compare versions
 - `PATCH /cases/{case_id}/status` - move a case through the workflow
 - `GET /cases/{case_id}/audit` - case audit log
+- `POST /cases/chat` - ask Qwen questions over selected/tagged cases
 - `POST /cases/{case_id}/report-text` - generate polished report text
 - `GET /cases/{case_id}/export-pdf` - export a PDF case report
 

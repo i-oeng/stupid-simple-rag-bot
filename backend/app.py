@@ -50,6 +50,13 @@ class SummarizeRequest(BaseModel):
     max_chunks: int = 8
 
 
+class CaseChatRequest(BaseModel):
+    question: str
+    case_ids: List[str] = Field(default_factory=list)
+    include_documents: bool = True
+    max_document_excerpts: int = Field(default=6, ge=0, le=20)
+
+
 class CaseCreateRequest(BaseModel):
     client_info: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -310,6 +317,39 @@ async def case_audit(case_id: str):
     return {"events": case_service.audit_log(case_id)}
 
 
+@app.post("/cases/chat")
+async def chat_with_cases(request: CaseChatRequest):
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    items = _select_chat_cases(request.case_ids)
+    if not items:
+        raise HTTPException(status_code=404, detail="No matching cases found")
+    context = _case_chat_context(items, include_documents=request.include_documents, max_document_excerpts=request.max_document_excerpts)
+    prompt = f"""You are a local operations assistant for document review cases.
+Answer using only the tagged case context below. Do not invent facts. If the answer is not in the context, say what is missing.
+Use human-readable field names, not snake_case. Keep the answer concise but useful.
+When comparing cases, mention the case title or short case ID so the user can trace the answer.
+
+Question:
+{question}
+
+Tagged case context:
+{context}
+"""
+    answer = await _ask_ollama(
+        prompt,
+        system_content="You answer questions only from supplied local case context. Never invent document facts.",
+        temperature=0.1,
+    )
+    return {
+        "question": question,
+        "answer": answer,
+        "model": OLLAMA_MODEL,
+        "cases": [_case_chat_card(item) for item in items],
+    }
+
+
 @app.post("/cases/{case_id}/title")
 async def generate_case_title(case_id: str, actor: str = "streamlit"):
     item = case_service.get_case(case_id)
@@ -405,12 +445,60 @@ async def root():
             "GET /cases/{case_id}/diff": "Compare case versions",
             "PATCH /cases/{case_id}/status": "Move case through New, Parsed, Needs Review, Approved, Sent",
             "POST /cases/{case_id}/title": "Generate and save a short Qwen case title",
+            "POST /cases/chat": "Ask Qwen questions over selected/tagged cases",
             "POST /cases/{case_id}/report-text": "Generate polished local LLM report text",
             "POST /cases/{case_id}/report-pdf": "Export the generated report text as a PDF",
             "GET /cases/{case_id}/export-pdf": "Export a PDF case report",
             "GET /documents/{document_id}/report": "Download the Markdown processing report",
         },
     }
+
+
+def _select_chat_cases(case_ids: List[str]) -> List[Dict[str, Any]]:
+    cases = case_service.list_cases()
+    if case_ids:
+        wanted = {str(case_id) for case_id in case_ids}
+        return [item for item in cases if item.get("case_id") in wanted]
+    return sorted(cases, key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)[:8]
+
+
+def _case_chat_card(item: Dict[str, Any]) -> Dict[str, Any]:
+    summary = item.get("case_summary", {}) or {}
+    fields = item.get("extraction", {}).get("fields", {}) or {}
+    return {
+        "case_id": item.get("case_id"),
+        "title": (item.get("metadata") or {}).get("display_title") or item.get("source_filename") or item.get("case_id"),
+        "status": item.get("status"),
+        "document_type": summary.get("document_type"),
+        "risk_level": (item.get("review_checklist") or {}).get("risk_level"),
+        "counterparty": (fields.get("counterparty") or {}).get("value"),
+        "total_amount": summary.get("total_amount"),
+    }
+
+
+def _case_chat_context(items: List[Dict[str, Any]], include_documents: bool = True, max_document_excerpts: int = 6) -> List[Dict[str, Any]]:
+    context = []
+    for item in items:
+        facts = _case_report_facts(item)
+        if not include_documents:
+            facts.pop("document_excerpts", None)
+        elif max_document_excerpts >= 0:
+            facts["document_excerpts"] = facts.get("document_excerpts", [])[:max_document_excerpts]
+        audit = case_service.audit_log(item.get("case_id"))[-8:]
+        context.append({
+            "case": _case_chat_card(item),
+            "facts": facts,
+            "audit_events": [
+                {
+                    "timestamp": event.get("timestamp"),
+                    "actor": event.get("actor"),
+                    "action": _report_label(event.get("action")),
+                    "details": event.get("details", {}),
+                }
+                for event in audit
+            ],
+        })
+    return context
 
 
 def _format_search_context(results: List[dict]) -> str:
@@ -465,7 +553,7 @@ async def _generate_case_report_text(item: Dict[str, Any]) -> Dict[str, Any]:
     facts = _case_report_facts(item)
     prompt = f"""You are drafting an evidence-bound operational document review report.
 Use only the supplied extracted fields and document excerpts. Do not invent facts, do not change numbers, and do not add unsupported legal conclusions.
-Do not use markdown tables, bold markers, italic markers, or decorative separators because this report is exported to PDF. Use plain headings and short plain lines.
+Do not use markdown tables, bold markers, italic markers, decorative separators, snake_case names, or underscores because this report is exported to PDF. Use human-readable labels like Document ID Number, Due Date, and Total Amount.
 If a value is missing, write "Not extracted".
 
 For contracts, the useful report is not a numbers report. Summarize the document substance: parties, purpose, effective date, term/survival, confidentiality duties, return/destruction, governing law or dispute venue, signature status, and review flags.
@@ -500,26 +588,49 @@ def _case_report_facts(item: Dict[str, Any]) -> Dict[str, Any]:
         "source_filename": item.get("source_filename"),
         "document_type": summary.get("document_type") or extraction.get("document_type"),
         "extracted_fields": {
-            name: {"value": payload.get("value"), "confidence": payload.get("confidence")}
+            _report_label(name): {"value": payload.get("value"), "confidence": payload.get("confidence")}
             for name, payload in fields.items()
             if isinstance(payload, dict)
         },
         "period_metrics": extraction.get("period_metrics", [])[:18],
+        "line_items": extraction.get("line_items", [])[:12],
         "summary": {
-            "total_amount": summary.get("total_amount"),
-            "period_metric_count": summary.get("period_metric_count"),
-            "period_metric_total": summary.get("period_metric_total"),
-            "data_completeness": summary.get("data_completeness"),
-            "low_confidence_count": summary.get("low_confidence_count"),
-            "qr_codes_found": summary.get("qr_codes_found"),
-            "visual_markers_found": summary.get("visual_markers_found"),
-            "visual_marker_types": summary.get("visual_marker_types", {}),
-            "risk_level": checklist.get("risk_level"),
-            "failed_checks": checklist.get("failed_checks", []),
+            "Total Amount": summary.get("total_amount"),
+            "Period Metric Count": summary.get("period_metric_count"),
+            "Period Metric Total": summary.get("period_metric_total"),
+            "Line Item Count": summary.get("line_item_count"),
+            "Data Completeness": summary.get("data_completeness"),
+            "Low Confidence Count": summary.get("low_confidence_count"),
+            "QR Codes Found": summary.get("qr_codes_found"),
+            "Visual Markers Found": summary.get("visual_markers_found"),
+            "Visual Marker Types": {_report_label(key): value for key, value in (summary.get("visual_marker_types", {}) or {}).items()},
+            "Risk Level": _report_label(checklist.get("risk_level")),
+            "Failed Checks": [_report_label(name) for name in checklist.get("failed_checks", [])],
         },
-        "review_checks": checklist.get("checks", []),
+        "review_checks": [
+            {"name": _report_label(check.get("name")), "status": _report_label(check.get("status")), "evidence": check.get("evidence")}
+            for check in checklist.get("checks", [])
+            if isinstance(check, dict)
+        ],
         "document_excerpts": _case_document_excerpts(item),
     }
+
+
+def _report_label(value: Any) -> str:
+    text = str(value or "")
+    overrides = {
+        "document_id_number": "Document ID Number",
+        "service_or_site": "Service / Site",
+        "category_or_rate": "Category / Rate",
+        "qr": "QR",
+        "qwen": "Qwen",
+        "kwh": "kWh",
+    }
+    if text.lower() in overrides:
+        return overrides[text.lower()]
+    words = re.sub(r"[_-]+", " ", text).split()
+    acronyms = {"api", "crm", "id", "json", "pdf", "qr", "rag", "sla", "url"}
+    return " ".join(word.upper() if word.lower() in acronyms else word.capitalize() for word in words) or "Unknown"
 
 
 def _case_document_excerpts(item: Dict[str, Any], max_chars: int = 5200) -> List[Dict[str, Any]]:

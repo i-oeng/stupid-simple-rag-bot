@@ -144,6 +144,8 @@ def _markdown_report(state: Dict[str, Any], text: str) -> None:
             state["y"] += 18
             continue
 
+        bullet = bool(re.match(r"^[-*]\s+", line))
+        numbered = bool(re.match(r"^\d+[.)]\s+", line))
         line = re.sub(r"^[-*]\s+", "", line).strip()
         line = re.sub(r"^\d+[.)]\s+", "", line).strip()
         line = _plain_markdown(line)
@@ -153,6 +155,9 @@ def _markdown_report(state: Dict[str, Any], text: str) -> None:
         if key_value:
             _report_key_value_row(state, key_value[0], key_value[1])
             continue
+        if bullet or numbered:
+            _bullet_line(state, line)
+            continue
         for wrapped in _wrap(line, 88):
             _ensure_space(state, LINE_HEIGHT + 2)
             _text(state, wrapped, MARGIN, state["y"], size=9, color=INK)
@@ -161,7 +166,7 @@ def _markdown_report(state: Dict[str, Any], text: str) -> None:
 
 
 def _report_key_value_row(state: Dict[str, Any], label: Any, value: Any) -> None:
-    label_text = _plain_markdown(label).strip(" :") or "Detail"
+    label_text = _humanize(_plain_markdown(label)).strip(" :") or "Detail"
     value_text = _plain_markdown(value).strip() or "Not extracted"
     label_lines = _wrap(label_text, 24)
     value_lines = _wrap(value_text, 58)
@@ -172,6 +177,17 @@ def _report_key_value_row(state: Dict[str, Any], label: Any, value: Any) -> None
         _text(state, line, MARGIN, start_y + index * LINE_HEIGHT, size=8.5, color=MUTED, bold=True)
     for index, line in enumerate(value_lines):
         _text(state, line, MARGIN + 165, start_y + index * LINE_HEIGHT, size=9, color=INK)
+    state["y"] += row_lines * LINE_HEIGHT + 4
+
+
+def _bullet_line(state: Dict[str, Any], text: str) -> None:
+    lines = _wrap(_plain_markdown(text), 82)
+    row_lines = max(len(lines), 1)
+    _ensure_space(state, row_lines * LINE_HEIGHT + 5)
+    y = state["y"]
+    state["page"].draw_circle((MARGIN + 4, y - 3), 1.8, color=BLUE, fill=BLUE)
+    for index, line in enumerate(lines):
+        _text(state, line, MARGIN + 16, y + index * LINE_HEIGHT, size=9, color=INK)
     state["y"] += row_lines * LINE_HEIGHT + 4
 
 

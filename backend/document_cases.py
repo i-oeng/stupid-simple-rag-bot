@@ -142,11 +142,18 @@ class DocumentCaseService:
         document_type = self._detect_document_type(lower_text)
         metrics = self._extract_period_metrics(text, tables)
         total_amount = self._extract_money(text, tables)
-        fields = self._extract_contract_fields(text, tables) if document_type == "contract" else self._extract_operational_fields(text, tables, total_amount)
+        line_items: List[Dict[str, Any]] = []
+        if document_type == "contract":
+            fields = self._extract_contract_fields(text, tables)
+        elif document_type == "invoice":
+            fields, line_items = self._extract_invoice_fields(text, tables, total_amount)
+        else:
+            fields = self._extract_operational_fields(text, tables, total_amount)
         return {
             "document_type": document_type,
             "fields": fields,
             "period_metrics": metrics,
+            "line_items": line_items,
             "tables_found": len(tables),
             "qr_codes_found": len(document.get("qr_codes", [])),
             "visual_markers_found": len(document.get("visual_markers", [])),
@@ -170,6 +177,164 @@ class DocumentCaseService:
             "category_or_rate": self._field(self._find_value(text, tables, ["tariff", "rate class", "plan", "category", "department", "cost center"]), 0.60),
             "total_amount": self._field(total_amount, 0.88 if total_amount else 0.25),
         }
+
+    def _extract_invoice_fields(self, text: str, tables: List[Dict[str, Any]], total_amount: Optional[float]) -> tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        line_items = self._extract_invoice_line_items(text, tables)
+        subtotal = self._invoice_money_value(text, "subtotal")
+        tax_amount = self._invoice_money_value(text, "tax")
+        fields = {
+            "document_id_number": self._field(self._invoice_identifier(text), 0.94),
+            "vendor": self._field(self._invoice_vendor(text), 0.88),
+            "counterparty": self._field(self._invoice_bill_to(text), 0.90),
+            "document_date": self._field(self._invoice_date(text, "issue date") or self._invoice_date(text, "invoice date"), 0.92),
+            "due_date": self._field(self._invoice_date(text, "due date"), 0.92),
+            "service_or_site": self._field(self._invoice_billing_address(text), 0.76),
+            "category_or_rate": self._field(self._invoice_category(line_items), 0.82),
+            "subtotal": self._field(subtotal, 0.88 if subtotal is not None else 0.25),
+            "tax_amount": self._field(tax_amount, 0.86 if tax_amount is not None else 0.25),
+            "total_amount": self._field(total_amount, 0.92 if total_amount else 0.25),
+            "payment_reference": self._field(self._invoice_payment_reference(text), 0.88),
+            "payment_account": self._field(self._invoice_payment_account(text), 0.82),
+        }
+        return fields, line_items
+
+    def _invoice_identifier(self, text: str) -> Optional[str]:
+        return self._first_match(text, [
+            r"(?im)^\s*invoice\s*(?:no\.?|number|#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\s*$",
+            r"(?im)^\s*reference\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\s*$",
+        ])
+
+    def _invoice_vendor(self, text: str) -> Optional[str]:
+        for raw_line in text.splitlines()[:12]:
+            line = self._clean_value(raw_line)
+            if line and not re.search(r"(?i)^(invoice|bill to|issue date|due date|invoice no|description|qty|unit price|amount)$", line):
+                return line.strip(" .")
+        return None
+
+    def _invoice_bill_to(self, text: str) -> Optional[str]:
+        block = self._block_after_heading(text, "bill to", stop_headings=["description", "payment details", "notes"])
+        if not block:
+            return None
+        for raw_line in block.splitlines():
+            line = self._clean_value(raw_line)
+            if line and not line.lower().startswith("attn:"):
+                return line.strip(" .")
+        return None
+
+    def _invoice_billing_address(self, text: str) -> Optional[str]:
+        block = self._block_after_heading(text, "bill to", stop_headings=["description", "payment details", "notes"])
+        if not block:
+            return None
+        parts = []
+        for raw_line in block.splitlines()[1:]:
+            line = self._clean_value(raw_line)
+            if line and not line.lower().startswith("attn:"):
+                parts.append(line)
+        return " ".join(parts[:3]) or None
+
+    def _invoice_date(self, text: str, label: str) -> Optional[str]:
+        return self._first_match(text, [rf"(?im)^\s*{re.escape(label)}\s*[:#-]?\s*([A-Z][a-z]+\s+\d{{1,2}},?\s+\d{{4}}|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})\s*$"])
+
+    def _invoice_money_value(self, text: str, label: str) -> Optional[float]:
+        pattern = re.compile(rf"(?im)^\s*{re.escape(label)}(?:\s*\([^)]*\))?\s*[:#-]?\s*([$???]?\s*[0-9][0-9,]*(?:\.[0-9]{{2}})?)\s*$")
+        match = pattern.search(text)
+        return self._parse_number(match.group(1)) if match else None
+
+    def _invoice_payment_reference(self, text: str) -> Optional[str]:
+        block = self._block_after_heading(text, "payment details", stop_headings=["notes", "description", "bill to"])
+        search_text = block or text
+        return self._first_match(search_text, [r"(?im)^\s*reference\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\s*$"])
+
+    def _invoice_payment_account(self, text: str) -> Optional[str]:
+        block = self._block_after_heading(text, "payment details", stop_headings=["notes", "description", "bill to"])
+        search_text = block or text
+        return self._first_match(search_text, [r"(?im)^\s*account\s+no\.?\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\s*$"])
+
+    def _invoice_category(self, line_items: List[Dict[str, Any]]) -> Optional[str]:
+        if not line_items:
+            return None
+        descriptions = " ".join(str(item.get("description", "")) for item in line_items).lower()
+        if any(term in descriptions for term in ["design", "logo", "ui", "ux", "illustration", "animation", "brand"]):
+            return "Design services"
+        if any(term in descriptions for term in ["consulting", "retainer", "support"]):
+            return "Professional services"
+        return "Invoice services"
+
+    def _extract_invoice_line_items(self, text: str, tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        lines = [self._clean_value(line) for line in text.splitlines()]
+        lines = [line for line in lines if line]
+        try:
+            start = next(index for index, line in enumerate(lines) if self._label_key(line) == "description")
+        except StopIteration:
+            return self._line_items_from_tables(tables)
+        while start < len(lines) and self._label_key(lines[start]) != "amount":
+            start += 1
+        start += 1
+        end = next((index for index in range(start, len(lines)) if self._label_key(lines[index]).startswith("subtotal")), len(lines))
+        items: List[Dict[str, Any]] = []
+        description_parts: List[str] = []
+        index = start
+        while index < end:
+            line = lines[index]
+            if re.fullmatch(r"\d+(?:\.\d+)?", line) and index + 2 < end and self._money_from_snippet(lines[index + 1]) is not None and self._money_from_snippet(lines[index + 2]) is not None:
+                description = self._clean_value(" ".join(description_parts))
+                quantity = self._parse_number(line) or 0
+                unit_price = self._money_from_snippet(lines[index + 1]) or 0
+                amount = self._money_from_snippet(lines[index + 2]) or 0
+                if description:
+                    items.append({
+                        "description": description,
+                        "quantity": int(quantity) if float(quantity).is_integer() else quantity,
+                        "unit_price": round(unit_price, 2),
+                        "amount": round(amount, 2),
+                        "confidence": 0.90,
+                        "source": "invoice_text",
+                    })
+                description_parts = []
+                index += 3
+                continue
+            description_parts.append(line)
+            index += 1
+        return items or self._line_items_from_tables(tables)
+
+    def _line_items_from_tables(self, tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for table in tables:
+            for row in table.get("rows", []):
+                text = self._clean_value(" ".join(self._clean_cell(cell) for cell in row))
+                amounts = [self._parse_number(match.group(0)) for match in MONEY_AMOUNT_RE.finditer(text)]
+                amounts = [amount for amount in amounts if amount is not None]
+                quantity = next((self._parse_number(match.group(0)) for match in STRICT_NUMBER_RE.finditer(text) if "$" not in match.group(0)), None)
+                if len(amounts) >= 2 and quantity:
+                    description = re.split(r"\d+(?:\.\d+)?\s*[$???]", text, maxsplit=1)[0]
+                    items.append({
+                        "description": self._clean_value(description),
+                        "quantity": int(quantity) if float(quantity).is_integer() else quantity,
+                        "unit_price": round(amounts[-2], 2),
+                        "amount": round(amounts[-1], 2),
+                        "confidence": 0.76,
+                        "source": "invoice_table",
+                    })
+        return [item for item in items if item.get("description")]
+
+    def _block_after_heading(self, text: str, heading: str, stop_headings: List[str]) -> Optional[str]:
+        lines = text.splitlines()
+        start = None
+        heading_key = self._label_key(heading)
+        stop_keys = {self._label_key(item) for item in stop_headings}
+        for index, line in enumerate(lines):
+            if self._label_key(line) == heading_key:
+                start = index + 1
+                break
+        if start is None:
+            return None
+        collected = []
+        for line in lines[start:]:
+            key = self._label_key(line)
+            if key in stop_keys:
+                break
+            collected.append(line)
+        return "\n".join(collected).strip() or None
 
     def _extract_contract_fields(self, text: str, tables: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         fields: Dict[str, Dict[str, Any]] = {
@@ -276,6 +441,7 @@ class DocumentCaseService:
             "document_type": extraction.get("document_type", "unknown"),
             "period_metric_count": len(metrics),
             "period_metric_total": round(metric_total, 2),
+            "line_item_count": len(extraction.get("line_items", [])),
             "total_amount": round(float(total_amount or 0), 2),
             "data_completeness": data_completeness,
             "low_confidence_count": len(low_confidence),
@@ -874,9 +1040,9 @@ class DocumentCaseService:
         fields = extraction.get("fields", {})
         present = len([field for field in fields.values() if field.get("value") not in [None, ""]])
         requires_structured_values = extraction.get("document_type") not in {"contract", "operational_document"}
-        metric_score = 1 if requires_structured_values and extraction.get("period_metrics") else 0
+        structured_score = 1 if requires_structured_values and (extraction.get("period_metrics") or extraction.get("line_items")) else 0
         denominator = len(fields) + (1 if requires_structured_values else 0)
-        return round((present + metric_score) / max(denominator, 1), 2)
+        return round((present + structured_score) / max(denominator, 1), 2)
 
     def _check(self, name: str, passed: bool, evidence: str) -> Dict[str, str]:
         return {"name": name, "status": "pass" if passed else "needs_review", "evidence": evidence}

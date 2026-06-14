@@ -100,6 +100,22 @@ Authorized Signature
     assert item["case_summary"]["low_confidence_count"] == 0
 
 
+def test_case_chat_context_uses_human_labels(tmp_path, monkeypatch):
+    import app as backend_app
+
+    service = make_service(tmp_path)
+    item = create_case(service, "invoice")
+    monkeypatch.setattr(backend_app, "case_service", service)
+    monkeypatch.setattr(backend_app.processor, "get_document", lambda document_id: None)
+
+    context = backend_app._case_chat_context([item], include_documents=False)
+    fields = context[0]["facts"]["extracted_fields"]
+
+    assert "Document ID Number" in fields
+    assert "document_id_number" not in fields
+    assert context[0]["case"]["case_id"] == item["case_id"]
+
+
 def test_settings_update_creates_version_and_diff(tmp_path):
     service = make_service(tmp_path)
     item = create_case(service, "invoice")
@@ -177,6 +193,98 @@ def test_manual_correction_recalculates_and_audits(tmp_path):
     assert updated["case_summary"]["period_metric_total"] == 100
     assert updated["versions"][-1]["label"] == "Manual correction"
     assert any(event["action"] == "extraction_corrected" for event in audit)
+
+
+def test_invoice_extraction_reads_bill_to_totals_and_line_items(tmp_path):
+    service = make_service(tmp_path)
+    text = """
+NOVA DESIGN STUDIO
+INVOICE
+123 Creative Avenue, Suite 4B
+San Francisco, CA 94107
+hello@novadesign.io
+Invoice No: INV-2026-0047
+Issue Date: June 14, 2026
+Due Date: July 14, 2026
+BILL TO
+Brightfield Technologies Inc.
+Attn: Sarah Chen, Procurement
+450 Market Street, Floor 12
+New York, NY 10001
+DESCRIPTION
+QTY
+UNIT PRICE
+AMOUNT
+Brand Identity Design Logo, color palette,
+typography system & brand guidelines
+1
+$4,500.00
+$4,500.00
+Website UI/UX Design Wireframes, high-fidelity
+mockups for 8 pages (desktop + mobile)
+1
+$6,200.00
+$6,200.00
+Illustration Pack Custom icon set - 40 icons in SVG
+& PNG formats
+1
+$1,800.00
+$1,800.00
+Motion Design - Hero Animation 10-second looping
+animation for homepage
+2
+$950.00
+$1,900.00
+Monthly Retainer - May 2026 Ad hoc revisions,
+stakeholder calls & design support
+1
+$2,200.00
+$2,200.00
+Subtotal
+$16,600.00
+Tax (8%)
+$1,328.00
+TOTAL DUE
+$17,928.00
+Payment Details
+Bank: First National Bank
+Account Name: Nova Design Studio LLC
+Account No: 8847-229-001
+Routing No: 021000021
+Reference: INV-2026-0047
+Notes
+Payment is due within 30 days of invoice date.
+"""
+    document = {
+        "document_id": "invoice-doc",
+        "filename": "invoice.pdf",
+        "pages": 1,
+        "qr_codes": [],
+        "visual_markers": [],
+        "tables": [],
+        "chunks": [{"page": 1, "text": text}],
+    }
+
+    item = service.create_from_document(document=document, metadata={"owner": "Ops"}, actor="test")
+    fields = item["extraction"]["fields"]
+    line_items = item["extraction"].get("line_items", [])
+
+    assert fields["document_id_number"]["value"] == "INV-2026-0047"
+    assert fields["vendor"]["value"] == "NOVA DESIGN STUDIO"
+    assert fields["counterparty"]["value"] == "Brightfield Technologies Inc"
+    assert fields["document_date"]["value"] == "June 14, 2026"
+    assert fields["due_date"]["value"] == "July 14, 2026"
+    assert fields["service_or_site"]["value"] == "450 Market Street, Floor 12 New York, NY 10001"
+    assert fields["subtotal"]["value"] == 16600.0
+    assert fields["tax_amount"]["value"] == 1328.0
+    assert fields["total_amount"]["value"] == 17928.0
+    assert fields["payment_account"]["value"] == "8847-229-001"
+    assert len(line_items) == 5
+    assert line_items[0]["description"].startswith("Brand Identity Design")
+    assert line_items[3]["quantity"] == 2
+    assert line_items[3]["amount"] == 1900.0
+    assert item["case_summary"]["line_item_count"] == 5
+    assert item["case_summary"]["data_completeness"] == 1.0
 
 
 def test_utility_bill_extraction_respects_units_and_money_labels(tmp_path):
@@ -259,7 +367,7 @@ def test_case_pdf_export(tmp_path):
 def test_generated_report_pdf_export(tmp_path):
     service = make_service(tmp_path)
     item = create_case(service, "invoice")
-    report_text = "## Executive Summary\n- **Total amount**: 18,450.75\n- **Risk**: medium"
+    report_text = "## Executive Summary\n- **document_id_number**: INV-2026-0047\n- **Total amount**: 18,450.75\n- **Risk**: medium\n## Recommended Next Actions\n- Obtain signatures from both parties."
     pdf_path = build_generated_report_pdf(item, report_text, tmp_path / "reports")
     pdf_text = "\n".join(page.get_text() for page in fitz.open(pdf_path))
 
@@ -270,5 +378,9 @@ def test_generated_report_pdf_export(tmp_path):
     assert pdf_path.stat().st_size > 1000
     assert "**" not in pdf_text
     assert "- Total amount" not in pdf_text
-    assert "Total amount" in pdf_text
+    assert "document_id_number" not in pdf_text
+    assert "Document ID Number" in pdf_text
+    assert "Total Amount" in pdf_text
     assert "18,450.75" in pdf_text
+    assert "Obtain signatures from both parties." in pdf_text
+    assert "- Obtain signatures" not in pdf_text

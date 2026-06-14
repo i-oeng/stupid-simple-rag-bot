@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,13 @@ LABEL_OVERRIDES = {
     "document_id_number": "Document ID Number",
     "document_type": "Document Type",
     "document_type_detected": "Document Type Detected",
+    "vendor": "Vendor",
+    "tax_amount": "Tax Amount",
+    "subtotal": "Subtotal",
+    "payment_reference": "Payment Reference",
+    "payment_account": "Payment Account",
+    "line_item_count": "Line Item Count",
+    "due_date": "Due Date",
     "financial_statement": "Financial Statement",
     "governing_law": "Governing Law",
     "identifier_present": "Identifier Present",
@@ -212,6 +220,14 @@ def safe_filename(case: Dict[str, Any], suffix: str, extension: str) -> str:
     return f"{slug}_{suffix}.{extension}"
 
 
+def pdf_preview(pdf_bytes: bytes) -> None:
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    st.markdown(
+        f'<iframe src="data:application/pdf;base64,{encoded}" width="100%" height="760" style="border: 1px solid #cbd5e1; border-radius: 8px;"></iframe>',
+        unsafe_allow_html=True,
+    )
+
+
 def select_case(cases: List[Dict[str, Any]], key: str) -> Optional[Dict[str, Any]]:
     if not cases:
         return None
@@ -292,6 +308,8 @@ def report_facts(case: Dict[str, Any]) -> Dict[str, Any]:
     if summary.get("period_metric_count"):
         facts["Period Values"] = summary.get("period_metric_count")
         facts["Period Total"] = summary.get("period_metric_total")
+    if summary.get("line_item_count"):
+        facts["Line Items"] = summary.get("line_item_count")
     if summary.get("total_amount"):
         facts["Total Amount"] = summary.get("total_amount")
     facts["Completeness"] = f"{float(summary.get('data_completeness') or 0):.0%}"
@@ -343,13 +361,14 @@ summary_cols[2].metric("High Risk", high_risk)
 summary_cols[3].metric("Avg Complete", f"{avg_completeness:.0%}")
 summary_cols[4].metric("Total Amount", fmt_number(material_total, 0))
 
-intake_tab, ops_tab, board_tab, review_tab, settings_tab, report_tab, audit_tab = st.tabs([
+intake_tab, ops_tab, board_tab, review_tab, settings_tab, report_tab, chat_tab, audit_tab = st.tabs([
     "Intake",
     "Operations",
     "Status Board",
     "Review Queue",
     "Review Settings",
     "Report",
+    "Qwen Chat",
     "Audit",
 ])
 
@@ -467,6 +486,11 @@ with review_tab:
         if marker_types:
             st.dataframe(display_rows([{"marker": key, "count": value} for key, value in marker_types.items()]), width='stretch', hide_index=True)
 
+        line_items = selected.get("extraction", {}).get("line_items", []) or []
+        if line_items:
+            st.markdown("#### Invoice Line Items")
+            st.dataframe(display_rows(line_items), width='stretch', hide_index=True)
+
         edit_left, edit_right = st.columns([1.1, 1])
         with edit_left:
             st.markdown("#### Extracted Fields")
@@ -544,6 +568,11 @@ with report_tab:
         st.markdown("#### Extracted Details Used")
         st.dataframe(pd.DataFrame([facts]), width='stretch', hide_index=True)
 
+        line_items = selected.get("extraction", {}).get("line_items", []) or []
+        if line_items:
+            st.markdown("#### Line Items")
+            st.dataframe(display_rows(line_items), width='stretch', hide_index=True)
+
         report_key = f"ai_report_{selected['case_id']}"
         pdf_key = f"{report_key}_pdf"
         saved_report = (selected.get("ai_report") or {}).get("text", "")
@@ -562,12 +591,14 @@ with report_tab:
         report_text = st.session_state.get(report_key, "")
         if not report_text:
             st.info("No prepared report yet.")
-        edited_report_text = st.text_area("Report text", report_text, height=440)
-        if edited_report_text != report_text:
-            report_text = edited_report_text
-            st.session_state[report_key] = edited_report_text
-            st.session_state.pop(pdf_key, None)
-        if report_text:
+        else:
+            with st.expander("Edit report source text"):
+                edited_report_text = st.text_area("Report source", report_text, height=360)
+                if edited_report_text != report_text:
+                    report_text = edited_report_text
+                    st.session_state[report_key] = edited_report_text
+                    st.session_state.pop(pdf_key, None)
+
             if not st.session_state.get(pdf_key):
                 try:
                     st.session_state[pdf_key] = api_post_download(
@@ -577,22 +608,80 @@ with report_tab:
                     )
                 except Exception as exc:
                     st.warning(f"PDF export is not ready: {exc}")
-            download_cols = st.columns([1, 1, 3])
-            with download_cols[0]:
+
+            if st.session_state.get(pdf_key):
+                st.markdown("#### PDF Preview")
+                pdf_preview(st.session_state[pdf_key])
                 st.download_button(
-                    "Download Markdown",
-                    data=report_text.encode("utf-8"),
-                    file_name=safe_filename(selected, "report", "md"),
-                    mime="text/markdown",
+                    "Download PDF",
+                    data=st.session_state[pdf_key],
+                    file_name=safe_filename(selected, "report", "pdf"),
+                    mime="application/pdf",
                 )
-            with download_cols[1]:
-                if st.session_state.get(pdf_key):
-                    st.download_button(
-                        "Download PDF",
-                        data=st.session_state[pdf_key],
-                        file_name=safe_filename(selected, "report", "pdf"),
-                        mime="application/pdf",
-                    )
+
+with chat_tab:
+    st.subheader("Qwen Chat")
+    if not cases:
+        st.info("Create a case first.")
+    else:
+        case_options = {case_label(item): item.get("case_id") for item in cases}
+        preferred_id = st.session_state.get("selected_case_id")
+        default_labels = [label for label, case_id in case_options.items() if case_id == preferred_id]
+        if not default_labels:
+            default_labels = list(case_options.keys())[: min(3, len(case_options))]
+        selected_labels = st.multiselect("Tagged cases", list(case_options.keys()), default=default_labels)
+        include_docs = st.checkbox("Use source document excerpts", value=True)
+        tagged_case_ids = [case_options[label] for label in selected_labels]
+        tagged_rows = [item for item in cases if item.get("case_id") in set(tagged_case_ids)]
+        if tagged_rows:
+            st.dataframe(
+                display_rows([
+                    {
+                        "case": case_title(item),
+                        "status": item.get("status"),
+                        "type": item.get("case_summary", {}).get("document_type"),
+                        "risk": item.get("review_checklist", {}).get("risk_level"),
+                        "amount": item.get("case_summary", {}).get("total_amount"),
+                    }
+                    for item in tagged_rows
+                ]),
+                width='stretch',
+                hide_index=True,
+            )
+
+        history_key = "case_chat_history"
+        st.session_state.setdefault(history_key, [])
+        for message in st.session_state[history_key][-8:]:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+
+        question = st.chat_input("Ask Qwen about the tagged cases")
+        if question:
+            if not tagged_case_ids:
+                st.warning("Tag at least one case.")
+            else:
+                st.session_state[history_key].append({"role": "user", "content": question})
+                with st.chat_message("user"):
+                    st.write(question)
+                with st.chat_message("assistant"):
+                    with st.spinner("Reading tagged cases..."):
+                        try:
+                            result = api_post(
+                                "/cases/chat",
+                                json={
+                                    "question": question,
+                                    "case_ids": tagged_case_ids,
+                                    "include_documents": include_docs,
+                                    "max_document_excerpts": 6,
+                                },
+                                timeout=180,
+                            )
+                            answer = result.get("answer") or "No answer returned."
+                            st.write(answer)
+                            st.session_state[history_key].append({"role": "assistant", "content": answer})
+                        except Exception as exc:
+                            st.error(f"Qwen chat failed: {exc}")
+
 
 with audit_tab:
     st.subheader("Audit")
