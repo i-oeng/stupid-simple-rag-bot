@@ -10,10 +10,46 @@ MONTHS = [
     "jan", "feb", "mar", "apr", "may", "jun",
     "jul", "aug", "sep", "oct", "nov", "dec",
 ]
-MONTH_METRIC_RE = re.compile(r"(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+([0-9][0-9, .]{2,})\s*([a-zA-Z/$%]+)?")
-MONEY_RE = re.compile(r"(?i)(?:total|amount due|balance due|contract value|invoice total)\s*[:#-]?\s*(?:usd|ngn|ghs|kes|zar|\$)?\s*([0-9][0-9, .]{2,})")
+MONTH_RE = re.compile(
+    r"(?i)\b("
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    r")\b"
+)
+MONTH_LOOKAHEAD_RE = (
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b"
+)
+EXPLICIT_USAGE_RE = re.compile(
+    r"(?i)(?<![\w/$])([0-9][0-9,]*(?:\.[0-9]+)?)\s*(kwh|kw\s*h|kwhr|mwh|wh|units?|unit)\b"
+)
+USAGE_CONTEXT_RE = re.compile(r"(?i)\b(kwh|kw\s*h|kwhr|mwh|wh|usage|consumption|energy|billed usage|metered usage|units?)\b")
+MONEY_CONTEXT_RE = re.compile(
+    r"(?i)([$\u20ac\u00a3\u20a6]|\b(?:amount|total|due|balance|charge|cost|tax|vat|subtotal|invoice|contract|payment|paid|fee|surcharge|usd|ngn|ghs|kes|zar|eur|gbp)\b)"
+)
+MONEY_AMOUNT_RE = re.compile(
+    r"(?i)(?:[$\u20ac\u00a3\u20a6]\s*[-\u2013]?\s*[0-9][0-9,]*(?:\.[0-9]{1,4})?|"
+    r"\b(?:usd|ngn|ghs|kes|zar|eur|gbp)\s*[-\u2013]?\s*[0-9][0-9,]*(?:\.[0-9]{1,4})?|"
+    r"[-\u2013]?\s*[0-9][0-9,]*(?:\.[0-9]{1,4})?\s*(?:usd|ngn|ghs|kes|zar|eur|gbp)\b)"
+)
 DATE_RE = re.compile(r"(?i)\b(?:date|due date|effective date|expiry date|contract date)\s*[:#-]?\s*([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4}|[a-z]{3,9}\s+[0-9]{1,2},?\s+[0-9]{4})")
 NUMBER_RE = re.compile(r"[0-9][0-9, .]*")
+STRICT_NUMBER_RE = re.compile(r"(?<![\w])[-+]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?")
+LABEL_STOP_TERMS = [
+    "account information", "bill summary", "customer name", "customer", "client", "vendor", "supplier",
+    "counterparty", "party", "name", "account number", "account no", "invoice number", "invoice no",
+    "contract number", "document id", "reference", "ref", "service address", "supply address",
+    "site address", "delivery address", "project site", "bill date", "invoice date", "due date",
+    "effective date", "expiry date", "contract date", "date", "rate class", "tariff", "plan",
+    "category", "department", "cost center", "previous balance", "current charges", "amount due",
+    "invoice total", "contract value", "billing period", "meter number", "payment options",
+]
+MONEY_LABELS = [
+    "amount due", "total amount due", "amount due by", "balance due", "total due", "invoice total",
+    "grand total", "total current charges", "current charges", "contract value", "amount payable",
+    "total payable", "subtotal",
+]
+LABEL_PRIORITY = {label: index for index, label in enumerate(MONEY_LABELS)}
 
 DEFAULT_REVIEW_SETTINGS: Dict[str, Any] = {
     "materiality_amount": 10000,
@@ -105,18 +141,18 @@ class DocumentCaseService:
         lower_text = text.lower()
         document_type = self._detect_document_type(lower_text)
         metrics = self._extract_period_metrics(text, tables)
-        total_amount = self._extract_money(text)
-        date_value = self._find_after_label(text, ["invoice date", "due date", "effective date", "expiry date", "contract date", "date"])
+        total_amount = self._extract_money(text, tables)
+        date_value = self._find_value(text, tables, ["invoice date", "bill date", "effective date", "contract date", "due date", "expiry date", "date"])
         if not date_value:
             match = DATE_RE.search(text)
             date_value = match.group(1).strip() if match else None
 
         fields = {
-            "document_id_number": self._field(self._find_after_label(text, ["document id", "reference", "ref", "invoice number", "invoice no", "contract number", "account number", "account no"]), 0.76),
-            "counterparty": self._field(self._find_after_label(text, ["customer", "client", "vendor", "supplier", "counterparty", "party", "name"]), 0.64),
+            "document_id_number": self._field(self._find_value(text, tables, ["document id", "reference", "ref", "invoice number", "invoice no", "contract number", "account number", "account no"]), 0.76),
+            "counterparty": self._field(self._find_value(text, tables, ["customer name", "customer", "client", "vendor", "supplier", "counterparty", "party", "name"]), 0.64),
             "document_date": self._field(date_value, 0.68),
-            "service_or_site": self._field(self._find_after_label(text, ["service address", "supply address", "site address", "delivery address", "project site"]), 0.58),
-            "category_or_rate": self._field(self._find_after_label(text, ["tariff", "rate class", "plan", "category", "department", "cost center"]), 0.60),
+            "service_or_site": self._field(self._find_value(text, tables, ["service address", "supply address", "site address", "delivery address", "project site"], allow_continuation=True), 0.58),
+            "category_or_rate": self._field(self._find_value(text, tables, ["tariff", "rate class", "plan", "category", "department", "cost center"]), 0.60),
             "total_amount": self._field(total_amount, 0.88 if total_amount else 0.25),
         }
         return {
@@ -334,26 +370,128 @@ class DocumentCaseService:
     def _extract_period_metrics(self, text: str, tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         seen = set()
-        for match in MONTH_METRIC_RE.finditer(text):
-            period = match.group(1).lower()[:3]
-            value = self._parse_number(match.group(2))
-            unit = (match.group(3) or "value").lower()
-            if value and period not in seen:
-                rows.append({"period": period, "value": value, "unit": unit, "confidence": 0.82, "source": "text"})
-                seen.add(period)
-        for table in tables:
-            for row in table.get("rows", []):
-                joined = " ".join(str(cell or "") for cell in row)
-                period = next((m for m in MONTHS if re.search(rf"\b{m}", joined, re.I)), None)
-                if not period or period in seen:
-                    continue
-                numbers = [self._parse_number(item) for item in NUMBER_RE.findall(joined)]
-                numbers = [number for number in numbers if number and number > 0]
-                if numbers:
-                    rows.append({"period": period, "value": max(numbers), "unit": "value", "confidence": 0.88, "source": "table"})
-                    seen.add(period)
+        for metric in self._usage_comparison_metrics(text):
+            self._add_metric_row(rows, seen, metric)
+        for line in text.splitlines():
+            metric = self._metric_from_segment(line, source="text", confidence=0.86)
+            if metric:
+                self._add_metric_row(rows, seen, metric)
+        for metric in self._table_period_metrics(tables, text):
+            self._add_metric_row(rows, seen, metric)
         rows.sort(key=lambda item: MONTHS.index(item["period"]) if item["period"] in MONTHS else 99)
         return rows
+
+    def _add_metric_row(self, rows: List[Dict[str, Any]], seen: set, metric: Optional[Dict[str, Any]]) -> None:
+        if not metric:
+            return
+        period = metric.get("period")
+        value = metric.get("value")
+        if not period or period in seen or not value or value <= 0:
+            return
+        rows.append(metric)
+        seen.add(period)
+
+    def _usage_comparison_metrics(self, text: str) -> List[Dict[str, Any]]:
+        metrics: List[Dict[str, Any]] = []
+        header_re = re.compile(r"(?i)(?:\d+\s*-\s*month\s+)?(?:usage|consumption|energy)\s+(?:comparison|history|summary)?\s*\((kwh|kw\s*h|kwhr|mwh|wh|units?)\)")
+        for header in header_re.finditer(text):
+            unit = self._normalize_unit(header.group(1))
+            block = text[header.end(): header.end() + 2200]
+            block = re.split(
+                r"(?i)\b(payment options|current charges breakdown|account information|bill summary|please return|review checklist)\b",
+                block,
+                maxsplit=1,
+            )[0]
+            month_re = re.compile(
+                rf"(?is)({MONTH_LOOKAHEAD_RE})(?:\s+['\u2019]?\d{{2,4}})?(?P<body>.*?)(?={MONTH_LOOKAHEAD_RE}(?:\s+['\u2019]?\d{{2,4}})?|$)"
+            )
+            for match in month_re.finditer(block):
+                period = self._normalize_month(match.group(1))
+                body = match.group("body")
+                numbers = [self._parse_number(item.group(0)) for item in STRICT_NUMBER_RE.finditer(body)]
+                numbers = [number for number in numbers if number and number > 0]
+                if not period or not numbers:
+                    continue
+                value = numbers[-1]
+                metrics.append({"period": period, "value": round(value, 2), "unit": unit, "confidence": 0.90, "source": "usage_comparison"})
+        return metrics
+
+    def _metric_from_segment(
+        self,
+        segment: str,
+        source: str,
+        confidence: float,
+        default_unit: Optional[str] = None,
+        require_usage_context: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        period = self._find_month(segment)
+        if not period:
+            return None
+        explicit_matches = list(EXPLICIT_USAGE_RE.finditer(segment))
+        if explicit_matches:
+            match = explicit_matches[-1]
+            value = self._parse_number(match.group(1))
+            unit = self._normalize_unit(match.group(2))
+            if value and unit:
+                return {"period": period, "value": round(value, 2), "unit": unit, "confidence": confidence, "source": source}
+        if not default_unit:
+            return None
+        if require_usage_context and not USAGE_CONTEXT_RE.search(segment):
+            return None
+        if MONEY_CONTEXT_RE.search(segment):
+            return None
+        numbers = [self._parse_number(item.group(0)) for item in STRICT_NUMBER_RE.finditer(segment)]
+        numbers = [number for number in numbers if number and number > 0]
+        if not numbers:
+            return None
+        value = numbers[-1]
+        return {"period": period, "value": round(value, 2), "unit": default_unit, "confidence": confidence, "source": source}
+
+    def _table_period_metrics(self, tables: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
+        metrics: List[Dict[str, Any]] = []
+        implicit_unit = self._implicit_usage_unit(text)
+        for table in tables:
+            usage_columns: List[int] = []
+            usage_column_units: Dict[int, str] = {}
+            for raw_row in table.get("rows", []):
+                cells = [self._clean_cell(cell) for cell in raw_row]
+                joined = " ".join(cells)
+                if not joined.strip():
+                    continue
+                if not self._find_month(joined):
+                    detected_units = self._usage_column_units(cells)
+                    if detected_units:
+                        usage_column_units = detected_units
+                        usage_columns = list(detected_units.keys())
+                    continue
+
+                metric = self._metric_from_segment(joined, source="table", confidence=0.88)
+                if metric:
+                    metrics.append(metric)
+                    continue
+
+                period = self._find_month(joined)
+                if not period:
+                    continue
+                for column_index in usage_columns:
+                    if column_index < len(cells):
+                        value = self._parse_number(cells[column_index])
+                        if value and value > 0:
+                            unit = usage_column_units.get(column_index) or self._unit_from_text(cells[column_index]) or "units"
+                            metrics.append({"period": period, "value": round(value, 2), "unit": unit, "confidence": 0.90, "source": "table"})
+                            break
+                else:
+                    if implicit_unit and self._row_looks_like_usage_history(joined):
+                        metric = self._metric_from_segment(
+                            joined,
+                            source="table_usage_history",
+                            confidence=0.88,
+                            default_unit=implicit_unit,
+                            require_usage_context=False,
+                        )
+                        if metric:
+                            metrics.append(metric)
+        return metrics
 
     def _clean_metric_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         cleaned = []
@@ -380,19 +518,192 @@ class DocumentCaseService:
             })
         return cleaned
 
-    def _extract_money(self, text: str) -> Optional[float]:
-        match = MONEY_RE.search(text)
-        if match:
-            return self._parse_number(match.group(1))
+    def _extract_money(self, text: str, tables: List[Dict[str, Any]]) -> Optional[float]:
+        candidates: List[tuple] = []
+        for label in MONEY_LABELS:
+            for snippet in self._snippets_after_label(text, label):
+                amount = self._money_from_snippet(snippet)
+                if amount is not None:
+                    candidates.append((LABEL_PRIORITY[label], "text", amount))
+        for table in tables:
+            for row in table.get("rows", []):
+                cells = [self._clean_cell(cell) for cell in row]
+                joined = " ".join(cells)
+                key = self._label_key(joined)
+                for label in MONEY_LABELS:
+                    if self._label_key(label) in key:
+                        amount = self._money_from_cells(cells)
+                        if amount is not None:
+                            candidates.append((LABEL_PRIORITY[label], "table", amount))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        return round(float(candidates[0][2]), 2)
+
+    def _find_value(self, text: str, tables: List[Dict[str, Any]], labels: List[str], allow_continuation: bool = False) -> Optional[str]:
+        table_value = self._find_value_in_tables(tables, labels, allow_continuation=allow_continuation)
+        if table_value:
+            return table_value
+        return self._find_value_in_text(text, labels)
+
+    def _find_value_in_tables(self, tables: List[Dict[str, Any]], labels: List[str], allow_continuation: bool = False) -> Optional[str]:
+        for table in tables:
+            rows = table.get("rows", [])
+            for row_index, row in enumerate(rows):
+                cells = [self._clean_cell(cell) for cell in row]
+                for cell_index, cell in enumerate(cells):
+                    if not cell:
+                        continue
+                    if not any(self._cell_matches_label(cell, label) for label in labels):
+                        continue
+                    value_index = cell_index + 1
+                    if value_index >= len(cells):
+                        continue
+                    value_parts = [cells[value_index]]
+                    if allow_continuation:
+                        next_index = row_index + 1
+                        while next_index < len(rows):
+                            next_cells = [self._clean_cell(cell) for cell in rows[next_index]]
+                            left_cell = next_cells[cell_index] if cell_index < len(next_cells) else ""
+                            continuation = next_cells[value_index] if value_index < len(next_cells) else ""
+                            if left_cell or not continuation:
+                                break
+                            value_parts.append(continuation)
+                            next_index += 1
+                    value = self._clean_value(" ".join(part for part in value_parts if part))
+                    if value and not self._looks_like_label(value):
+                        return value
         return None
 
-    def _find_after_label(self, text: str, labels: List[str]) -> Optional[str]:
-        for label in labels:
-            pattern = re.compile(rf"(?i){re.escape(label)}\s*[:#-]?\s*([^\n\r]{{2,100}})")
-            match = pattern.search(text)
-            if match:
-                return match.group(1).strip()[:100]
+    def _find_value_in_text(self, text: str, labels: List[str]) -> Optional[str]:
+        for label in sorted(labels, key=len, reverse=True):
+            pattern = re.compile(rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*(.{{0,180}})")
+            for match in pattern.finditer(text):
+                value = self._truncate_at_stop_label(match.group(1), current_label=label)
+                value = self._clean_value(value)
+                if value and not self._looks_like_label(value):
+                    return value[:100]
         return None
+
+    def _snippets_after_label(self, text: str, label: str) -> List[str]:
+        snippets = []
+        pattern = re.compile(rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*(.{{0,180}})")
+        for match in pattern.finditer(text):
+            snippets.append(self._truncate_at_stop_label(match.group(1), current_label=label, keep_money_context=True))
+        return snippets
+
+    def _truncate_at_stop_label(self, value: str, current_label: str, keep_money_context: bool = False) -> str:
+        earliest: Optional[int] = None
+        current = self._label_key(current_label)
+        for label in LABEL_STOP_TERMS:
+            if self._label_key(label) == current:
+                continue
+            if keep_money_context and label in {"due date", "date"} and self._label_key(current_label) in {"amount due", "amount due by", "total amount due", "balance due"}:
+                continue
+            match = re.search(rf"(?i)\b{re.escape(label)}\b", value)
+            if match and match.start() > 0:
+                earliest = match.start() if earliest is None else min(earliest, match.start())
+        if earliest is not None:
+            value = value[:earliest]
+        return value
+
+    def _money_from_cells(self, cells: List[str]) -> Optional[float]:
+        for cell in reversed(cells):
+            amount = self._money_from_snippet(cell)
+            if amount is not None:
+                return amount
+        return None
+
+    def _money_from_snippet(self, snippet: str) -> Optional[float]:
+        snippet = str(snippet or "")
+        for match in MONEY_AMOUNT_RE.finditer(snippet):
+            amount = self._parse_number(match.group(0))
+            if amount is not None:
+                return amount
+        numeric_matches = list(STRICT_NUMBER_RE.finditer(snippet))
+        if not numeric_matches:
+            return None
+        decimal_values = []
+        all_values = []
+        for match in numeric_matches:
+            token = match.group(0)
+            amount = self._parse_number(token)
+            if amount is None:
+                continue
+            if 1900 <= amount <= 2100 and "." not in token:
+                continue
+            all_values.append(amount)
+            if "." in token:
+                decimal_values.append(amount)
+        values = decimal_values or all_values
+        return values[-1] if values else None
+
+    def _usage_column_units(self, cells: List[str]) -> Dict[int, str]:
+        columns = {}
+        for index, cell in enumerate(cells):
+            if USAGE_CONTEXT_RE.search(cell) and not MONEY_CONTEXT_RE.search(cell):
+                columns[index] = self._unit_from_text(cell) or "units"
+        return columns
+
+    def _row_looks_like_usage_history(self, text: str) -> bool:
+        stripped = text.strip()
+        if not MONTH_RE.match(stripped):
+            return False
+        if MONEY_CONTEXT_RE.search(stripped):
+            return False
+        if re.search(r"(?i)\b(date|billing period|due|charge|tax|balance|payment|invoice|contract|rate)\b", stripped):
+            return False
+        return True
+
+    def _implicit_usage_unit(self, text: str) -> Optional[str]:
+        usage_header = re.search(r"(?i)(?:usage|consumption|energy)\s+(?:comparison|history|summary)?\s*\((kwh|kw\s*h|kwhr|mwh|wh|units?)\)", text)
+        if usage_header:
+            return self._normalize_unit(usage_header.group(1))
+        return None
+
+    def _unit_from_text(self, text: str) -> Optional[str]:
+        match = re.search(r"(?i)\b(kwh|kw\s*h|kwhr|mwh|wh|units?|unit)\b", text)
+        return self._normalize_unit(match.group(1)) if match else None
+
+    def _normalize_unit(self, value: Any) -> str:
+        unit = re.sub(r"\s+", "", str(value or "").lower())
+        mapping = {
+            "kwh": "kwh",
+            "kwhour": "kwh",
+            "kwhr": "kwh",
+            "mwh": "mwh",
+            "wh": "wh",
+            "unit": "units",
+            "units": "units",
+        }
+        return mapping.get(unit, unit or "units")
+
+    def _find_month(self, text: str) -> Optional[str]:
+        match = MONTH_RE.search(str(text or ""))
+        return self._normalize_month(match.group(1)) if match else None
+
+    def _normalize_month(self, value: str) -> str:
+        return str(value or "").lower()[:3]
+
+    def _cell_matches_label(self, cell: str, label: str) -> bool:
+        cell_key = self._label_key(cell)
+        label_key = self._label_key(label)
+        return cell_key == label_key or cell_key.startswith(f"{label_key} ")
+
+    def _label_key(self, value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    def _clean_cell(self, value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def _clean_value(self, value: Any) -> str:
+        cleaned = self._clean_cell(value).strip(" :#-")
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned
+
+    def _looks_like_label(self, value: str) -> bool:
+        key = self._label_key(value)
+        return key in {self._label_key(label) for label in LABEL_STOP_TERMS}
 
     def _field(self, value: Any, confidence: float) -> Dict[str, Any]:
         return {"value": value, "confidence": round(confidence if value not in [None, ""] else min(confidence, 0.25), 2)}

@@ -16,7 +16,7 @@ import uvicorn
 from demo_data import demo_client_info, demo_metadata, demo_review_settings
 from document_cases import STATUS_FLOW, DocumentCaseService
 from document_processor import LocalDocumentProcessor
-from report_pdf import build_case_report_pdf
+from report_pdf import build_case_report_pdf, build_generated_report_pdf
 from utils import cleanup_old_files, ensure_directories
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
@@ -72,6 +72,10 @@ class ExtractionCorrectionRequest(BaseModel):
     fields: Dict[str, Any] = Field(default_factory=dict)
     period_metrics: Optional[List[Dict[str, Any]]] = None
     actor: str = "user"
+
+
+class ReportPdfRequest(BaseModel):
+    report_text: str
 
 
 @app.on_event("startup")
@@ -329,6 +333,7 @@ async def generate_polished_case_report(case_id: str):
     facts = _case_report_facts(item)
     prompt = f"""You are drafting a concise operational document review report.
 Use only the supplied facts and structured case data. Do not invent facts, do not change numbers, and do not add unsupported conclusions.
+Every numeric value in your report must be copied exactly from "Facts to preserve exactly". If a value is missing or zero because it was not extracted, say "Not extracted" instead of guessing.
 Return a clean Markdown report with sections: Executive Summary, Verified Numbers, Extracted Fields, Risks, Missing Items, Recommended Next Actions.
 
 Facts to preserve exactly:
@@ -339,6 +344,20 @@ Structured case data:
 """
     answer = await _ask_ollama(prompt)
     return {"case_id": case_id, "model": OLLAMA_MODEL, "facts": facts, "report_text": answer}
+
+
+@app.post("/cases/{case_id}/report-pdf")
+async def export_generated_report_pdf(case_id: str, request: ReportPdfRequest):
+    item = case_service.get_case(case_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not request.report_text.strip():
+        raise HTTPException(status_code=400, detail="Report text is empty")
+    try:
+        pdf_path = build_generated_report_pdf(item, request.report_text, REPORT_DIR)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {exc}") from exc
+    return FileResponse(pdf_path, media_type="application/pdf", filename=pdf_path.name)
 
 
 @app.get("/cases/{case_id}/export-pdf")
@@ -397,6 +416,7 @@ async def root():
             "PATCH /cases/{case_id}/status": "Move case through New, Parsed, Needs Review, Approved, Sent",
             "POST /cases/{case_id}/title": "Generate and save a short Qwen case title",
             "POST /cases/{case_id}/report-text": "Generate polished local LLM report text",
+            "POST /cases/{case_id}/report-pdf": "Export the generated report text as a PDF",
             "GET /cases/{case_id}/export-pdf": "Export a PDF case report",
             "GET /documents/{document_id}/report": "Download the Markdown processing report",
         },

@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -20,9 +21,11 @@ LABEL_OVERRIDES = {
     "document_type_detected": "Document Type Detected",
     "financial_statement": "Financial Statement",
     "identifier_present": "Identifier Present",
+    "kwh": "kWh",
     "low_confidence_count": "Low Confidence Count",
     "logo_candidate": "Logo Candidate",
     "materiality_flag": "Materiality Flag",
+    "mwh": "MWh",
     "operational_document": "Operational Document",
     "period_metric_count": "Period Metric Count",
     "period_metric_total": "Period Metric Total",
@@ -38,8 +41,9 @@ LABEL_OVERRIDES = {
     "visual_marker_requirement": "Visual Marker Requirement",
     "visual_marker_types": "Visual Marker Types",
     "visual_markers_found": "Visual Markers Found",
+    "wh": "Wh",
 }
-ACRONYMS = {"api", "crm", "id", "json", "pdf", "qr", "rag", "sla", "url"}
+ACRONYMS = {"api", "crm", "id", "json", "mwh", "pdf", "qr", "rag", "sla", "url", "wh"}
 
 st.set_page_config(page_title="Local DocumentOps Automation", layout="wide", initial_sidebar_state="expanded")
 
@@ -88,6 +92,12 @@ def api_post(path: str, json: Optional[Dict[str, Any]] = None, files=None, timeo
     response = requests.post(f"{API_URL}{path}", json=json, files=files, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+
+def api_post_download(path: str, json: Optional[Dict[str, Any]] = None, timeout=180) -> bytes:
+    response = requests.post(f"{API_URL}{path}", json=json, timeout=timeout)
+    response.raise_for_status()
+    return response.content
 
 
 def api_patch(path: str, json: Dict[str, Any]):
@@ -183,6 +193,15 @@ def case_title(case: Dict[str, Any]) -> str:
 
 def case_label(case: Dict[str, Any]) -> str:
     return f"{case_title(case)} | {str(case.get('case_id', ''))[:8]}"
+
+
+def safe_filename(case: Dict[str, Any], suffix: str, extension: str) -> str:
+    title = case_title(case)
+    title = os.path.splitext(os.path.basename(title))[0]
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_").lower()
+    slug = slug[:42].strip("_") or "document_case"
+    case_id = str(case.get("case_id", ""))[:8] or "case"
+    return f"{slug}_{case_id}_{suffix}.{extension}"
 
 
 def select_case(cases: List[Dict[str, Any]], key: str) -> Optional[Dict[str, Any]]:
@@ -516,26 +535,50 @@ with report_tab:
         st.dataframe(pd.DataFrame([facts]), width='stretch', hide_index=True)
 
         report_key = f"ai_report_{selected['case_id']}"
+        pdf_key = f"{report_key}_pdf"
         if st.button("Generate report with Qwen", type="primary"):
             try:
                 result = api_post(f"/cases/{selected['case_id']}/report-text", timeout=180)
                 st.session_state[report_key] = result.get("report_text", "")
                 st.session_state[f"{report_key}_model"] = result.get("model", "")
+                st.session_state.pop(pdf_key, None)
             except Exception as exc:
                 st.error(f"Qwen report failed: {exc}")
 
         report_text = st.session_state.get(report_key, "")
         if not report_text:
             st.info("Generate a report to review and download the Qwen-written version.")
-        st.text_area("Report text", report_text, height=440)
+        edited_report_text = st.text_area("Report text", report_text, height=440)
+        if edited_report_text != report_text:
+            report_text = edited_report_text
+            st.session_state[report_key] = edited_report_text
+            st.session_state.pop(pdf_key, None)
         if report_text:
-            filename = f"{case_title(selected).lower().replace(' ', '_').replace('/', '-')}_report.md"
-            st.download_button(
-                "Download report",
-                data=report_text.encode("utf-8"),
-                file_name=filename,
-                mime="text/markdown",
-            )
+            download_cols = st.columns([1, 1, 3])
+            with download_cols[0]:
+                st.download_button(
+                    "Download Markdown",
+                    data=report_text.encode("utf-8"),
+                    file_name=safe_filename(selected, "report", "md"),
+                    mime="text/markdown",
+                )
+            with download_cols[1]:
+                if st.button("Prepare PDF"):
+                    try:
+                        st.session_state[pdf_key] = api_post_download(
+                            f"/cases/{selected['case_id']}/report-pdf",
+                            json={"report_text": report_text},
+                            timeout=180,
+                        )
+                    except Exception as exc:
+                        st.error(f"PDF export failed: {exc}")
+                if st.session_state.get(pdf_key):
+                    st.download_button(
+                        "Download PDF",
+                        data=st.session_state[pdf_key],
+                        file_name=safe_filename(selected, "report", "pdf"),
+                        mime="application/pdf",
+                    )
 
 with audit_tab:
     st.subheader("Audit")

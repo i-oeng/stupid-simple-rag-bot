@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from demo_data import demo_client_info, demo_document, demo_metadata, demo_review_settings
 from document_cases import DocumentCaseService
-from report_pdf import build_case_report_pdf
+from report_pdf import build_case_report_pdf, build_generated_report_pdf
 
 
 def make_service(tmp_path):
@@ -93,6 +93,73 @@ def test_manual_correction_recalculates_and_audits(tmp_path):
     assert any(event["action"] == "extraction_corrected" for event in audit)
 
 
+def test_utility_bill_extraction_respects_units_and_money_labels(tmp_path):
+    service = make_service(tmp_path)
+    document = {
+        "document_id": "tricky-utility",
+        "filename": "tricky_utility_bill.pdf",
+        "pages": 2,
+        "qr_codes": [],
+        "visual_markers": [],
+        "tables": [
+            {
+                "page": 1,
+                "rows": [
+                    ["ACCOUNT INFORMATION", "", "BILL SUMMARY", ""],
+                    ["Customer Name", "James A. Thornton", "Account Number", "7842-1193-005"],
+                    ["Service Address", "1847 Maple Grove Drive", "Bill Date", "June 10, 2026"],
+                    ["", "Springfield, IL 62704", "Due Date", "June 30, 2026"],
+                    ["Rate Class", "Residential R1", "Previous Balance", "$0.00"],
+                ],
+            },
+            {
+                "page": 2,
+                "rows": [
+                    ["Month", "Usage kWh", "Amount USD"],
+                    ["Jan", "812", "$130.20"],
+                    ["Feb", "744", "$119.40"],
+                    ["Mar", "631", "$108.10"],
+                ],
+            },
+            {
+                "page": 2,
+                "rows": [
+                    ["TOTAL CURRENT CHARGES", "", "682 kWh", "$147.83"],
+                ],
+            },
+        ],
+        "chunks": [
+            {
+                "page": 1,
+                "text": (
+                    "Customer Name James A. Thornton Account Number 7842-1193-005 "
+                    "Service Address 1847 Maple Grove Drive Bill Date June 10, 2026 "
+                    "Due Date June 30, 2026 Rate Class Residential R1 "
+                    "AMOUNT DUE BY JUNE 30, 2026 $147.83 "
+                    "6-MONTH USAGE COMPARISON (kWh) Jan '26 812 Feb '26 744 Mar '26 631 "
+                    "Apr '26 503 May '26 589 Jun '26 682 PAYMENT OPTIONS Phone 1-800-555-4743"
+                ),
+            }
+        ],
+    }
+
+    item = service.create_from_document(document=document, metadata={"owner": "Test"}, actor="test")
+    fields = item["extraction"]["fields"]
+    metrics = item["extraction"]["period_metrics"]
+
+    assert fields["document_id_number"]["value"] == "7842-1193-005"
+    assert fields["counterparty"]["value"] == "James A. Thornton"
+    assert fields["document_date"]["value"] == "June 10, 2026"
+    assert fields["service_or_site"]["value"] == "1847 Maple Grove Drive Springfield, IL 62704"
+    assert fields["category_or_rate"]["value"] == "Residential R1"
+    assert fields["total_amount"]["value"] == 147.83
+    assert [row["period"] for row in metrics] == ["jan", "feb", "mar", "apr", "may", "jun"]
+    assert [row["value"] for row in metrics] == [812, 744, 631, 503, 589, 682]
+    assert {row["unit"] for row in metrics} == {"kwh"}
+    assert item["case_summary"]["period_metric_total"] == 3961
+    assert item["case_summary"]["total_amount"] == 147.83
+
+
 def test_case_pdf_export(tmp_path):
     service = make_service(tmp_path)
     item = create_case(service, "contract")
@@ -100,4 +167,16 @@ def test_case_pdf_export(tmp_path):
 
     assert pdf_path.exists()
     assert pdf_path.suffix == ".pdf"
+    assert pdf_path.stat().st_size > 1000
+
+
+def test_generated_report_pdf_export(tmp_path):
+    service = make_service(tmp_path)
+    item = create_case(service, "invoice")
+    pdf_path = build_generated_report_pdf(item, "## Executive Summary\n- Total amount: 18,450.75", tmp_path / "reports")
+
+    assert pdf_path.exists()
+    assert pdf_path.suffix == ".pdf"
+    assert "qwen_report" in pdf_path.name
+    assert len(pdf_path.name) < 90
     assert pdf_path.stat().st_size > 1000
