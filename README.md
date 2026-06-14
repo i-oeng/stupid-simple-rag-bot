@@ -100,7 +100,7 @@ This starts the backend, dashboard, and n8n. See `DOCKER.md` for the optional Ol
 - `GET /documents/{document_id}/report` - download the Markdown processing report
 - `GET /search?q=...` - search local document vectors
 - `POST /ask` - ask Qwen/Ollama over retrieved chunks
-- `POST /demo/seed?case=utility_bill|contract|invoice|incomplete` - create a demo case
+- `POST /demo/seed?case=utility_bill|contract|invoice|incomplete` - generate a fresh Qwen demo case
 - `POST /cases/from-document/{document_id}` - create a review case
 - `GET /cases/board` - status board grouped by workflow stage
 - `PATCH /cases/{case_id}/extraction` - correct extracted fields and metrics

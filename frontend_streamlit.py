@@ -350,14 +350,14 @@ with intake_tab:
     with right:
         st.subheader("Demo")
         demo_case = st.selectbox("Demo case", DEMO_CASES, format_func=humanize)
-        if st.button("Create demo case"):
+        if st.button("Generate demo with Qwen"):
             try:
-                result = api_post(f"/demo/seed?case={demo_case}", timeout=120)
+                result = api_post(f"/demo/seed?case={demo_case}", timeout=240)
                 st.session_state["selected_case_id"] = result.get("document_case", {}).get("case_id")
-                st.success("Demo case created")
+                st.success("Qwen demo case generated")
                 st.rerun()
             except Exception as exc:
-                st.error(f"Demo seed failed: {exc}")
+                st.error(f"Qwen demo generation failed: {exc}")
         signal_rows = [
             {"signal": "PDF text extraction", "status": "active"},
             {"signal": "Table extraction", "status": "active" if health.get("tables_enabled") else "off"},

@@ -1,5 +1,8 @@
+import json
 import os
+import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
-from demo_data import demo_client_info, demo_document, demo_metadata, demo_review_settings
+from demo_data import demo_client_info, demo_metadata, demo_review_settings
 from document_cases import STATUS_FLOW, DocumentCaseService
 from document_processor import LocalDocumentProcessor
 from report_pdf import build_case_report_pdf
@@ -199,14 +202,23 @@ async def default_case_settings():
 
 @app.post("/demo/seed")
 async def seed_demo_case(case: str = Query("utility_bill", pattern="^(utility_bill|contract|invoice|incomplete)$")):
+    payload = await _generate_qwen_demo_payload(case)
+    document = _demo_document_from_payload(case, payload)
+    client_info = _clean_mapping(payload.get("client_info")) or demo_client_info(case)
+    metadata = _clean_mapping(payload.get("metadata")) or demo_metadata(case)
+    review_settings = demo_review_settings(case)
+    review_settings.update({key: value for key, value in _clean_mapping(payload.get("review_settings")).items() if value is not None})
+    if payload.get("title"):
+        metadata["display_title"] = str(payload["title"]).strip()[:90]
+
     document_case = case_service.create_from_document(
-        document=demo_document(case),
-        client_info=demo_client_info(case),
-        metadata=demo_metadata(case),
-        review_settings=demo_review_settings(case),
-        actor="demo_seed",
+        document=document,
+        client_info=client_info,
+        metadata=metadata,
+        review_settings=review_settings,
+        actor="qwen_demo_seed",
     )
-    return {"message": "Demo case created", "case": case, "document_case": document_case}
+    return {"message": "Qwen demo case generated", "case": case, "model": OLLAMA_MODEL, "document_case": document_case}
 
 
 @app.post("/cases/from-document/{document_id}")
@@ -376,7 +388,7 @@ async def root():
         "description": "Local document automation: PDF extraction, QR/stamp/signature/logo detection, confidence scoring, review queue, RAG search, workflow handoff, audit logs, and generated reports.",
         "endpoints": {
             "POST /process": "Upload PDFs and receive extracted chunks, QR data, visual-marker candidates, tables, validation, and report IDs",
-            "POST /demo/seed": "Create a demo document case",
+            "POST /demo/seed": "Generate a fresh Qwen demo document case",
             "POST /cases/from-document/{document_id}": "Create a document case from a processed PDF",
             "GET /cases/board": "Status board grouped by workflow stage",
             "PATCH /cases/{case_id}/extraction": "Correct extracted fields and structured metrics",
@@ -427,15 +439,157 @@ def _case_report_facts(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def _ask_ollama(prompt: str) -> str:
+async def _generate_qwen_demo_payload(case: str) -> Dict[str, Any]:
+    prompt = f"""Generate a fresh synthetic demo document for a local document review dashboard.
+Document category: {case}
+
+Return ONLY valid JSON. No markdown. No code fences.
+
+Required JSON shape:
+{{
+  "title": "short human title",
+  "filename": "demo filename ending in .pdf",
+  "document_text": "realistic document text with extractable labels and line breaks",
+  "client_info": {{"company": "company name", "name": "contact name", "email": "contact email"}},
+  "metadata": {{"owner": "short review owner", "department": "department", "priority": "normal|high|urgent"}},
+  "review_settings": {{"materiality_amount": 10000, "confidence_threshold": 0.75, "review_sla_hours": 24, "currency": "USD", "require_visual_marker": true}},
+  "tables": [[["Header 1", "Header 2"], ["Row", "Value"]]],
+  "qr_text": "short QR payload",
+  "visual_markers": [{{"page": 1, "kind": "logo_candidate|signature_candidate|stamp_candidate", "confidence": 0.55, "bbox": {{"x": 40, "y": 40, "width": 100, "height": 40}}, "method": "qwen_demo"}}]
+}}
+
+Rules:
+- Make each generation different: company, location, amounts, IDs, and dates must vary.
+- Use realistic but fictional data only.
+- Keep document_text between 18 and 45 lines.
+- Use labels that a parser can extract, such as Account Number, Invoice Number, Contract Number, Customer, Vendor, Client, Counterparty, Due date, Effective Date, Service Address, Project Site, Tariff, Category, Cost Center, Amount due, Invoice total, or Contract Value.
+- For utility_bill include at least 6 monthly lines like "Jan 42100 kWh".
+- For invoice include at least 3 line/month metric rows and an Invoice total.
+- For contract include Contract Number, Counterparty or Party, Effective Date, Contract Value, Category, and Project Site.
+- For incomplete intentionally omit at least two important fields and set require_visual_marker to true with an empty visual_markers list.
+- For contract include at least one signature_candidate or stamp_candidate.
+- The tables value must be a list of tables; each table must be a list of rows; each row must be a list of strings.
+"""
+    answer = await _ask_ollama(
+        prompt,
+        system_content="You generate realistic synthetic business documents for software demos. Return strict JSON only.",
+        temperature=0.75,
+    )
+    try:
+        return _parse_json_object(answer)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=f"Qwen returned invalid demo JSON: {exc}") from exc
+
+
+def _parse_json_object(text: str) -> Dict[str, Any]:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, flags=re.S)
+        if not match:
+            raise ValueError("No JSON object found")
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError as exc:
+            raise ValueError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Top-level JSON must be an object")
+    return payload
+
+
+def _demo_document_from_payload(case: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    document_id = f"qwen-demo-{uuid.uuid4().hex}"
+    filename = str(payload.get("filename") or f"qwen_demo_{case}.pdf").strip() or f"qwen_demo_{case}.pdf"
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+    text = str(payload.get("document_text") or "").strip()
+    if len(text) < 40:
+        raise HTTPException(status_code=502, detail="Qwen demo document text was too short")
+
+    return {
+        "document_id": document_id,
+        "filename": Path(filename).name,
+        "pages": 2,
+        "metadata": {"source": "qwen_demo", "case": case},
+        "qr_codes": [{"page": 1, "text": str(payload.get("qr_text") or f"QWEN-DEMO-{case.upper()}"), "type": "qrcode"}],
+        "visual_markers": _clean_visual_markers(payload.get("visual_markers")),
+        "tables": _clean_demo_tables(document_id, payload.get("tables")),
+        "chunks": [
+            {"id": f"{document_id}-p1-c0", "chunk_id": f"{document_id}-p1", "document_id": document_id, "filename": Path(filename).name, "page": 1, "text": text},
+        ],
+    }
+
+
+def _clean_mapping(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _clean_demo_tables(document_id: str, tables: Any) -> List[Dict[str, Any]]:
+    if not isinstance(tables, list):
+        return []
+    if tables and isinstance(tables[0], list) and (not tables[0] or not isinstance(tables[0][0], list)):
+        tables = [tables]
+    cleaned_tables = []
+    for index, table in enumerate(tables[:3]):
+        if not isinstance(table, list):
+            continue
+        rows = []
+        for row in table[:24]:
+            if isinstance(row, list):
+                rows.append([str(cell) for cell in row[:8]])
+        if rows:
+            cleaned_tables.append({"document_id": document_id, "page": 1, "table_index": index, "rows": rows})
+    return cleaned_tables
+
+
+def _clean_visual_markers(markers: Any) -> List[Dict[str, Any]]:
+    if not isinstance(markers, list):
+        return []
+    allowed = {"logo_candidate", "signature_candidate", "stamp_candidate"}
+    cleaned = []
+    for marker in markers[:5]:
+        if not isinstance(marker, dict):
+            continue
+        kind = str(marker.get("kind") or "").strip()
+        if kind not in allowed:
+            continue
+        bbox = marker.get("bbox") if isinstance(marker.get("bbox"), dict) else {}
+        try:
+            page = int(marker.get("page") or 1)
+            confidence = round(float(marker.get("confidence") or 0.55), 2)
+            x = float(bbox.get("x", 40))
+            y = float(bbox.get("y", 40))
+            width = float(bbox.get("width", 80))
+            height = float(bbox.get("height", 30))
+        except (TypeError, ValueError):
+            continue
+        cleaned.append({
+            "page": page,
+            "kind": kind,
+            "confidence": confidence,
+            "bbox": {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+            },
+            "method": "qwen_demo",
+        })
+    return cleaned
+
+
+async def _ask_ollama(prompt: str, system_content: str = "You are careful, concise, and evidence-bound. Never invent document facts or alter extracted values.", temperature: float = 0.1) -> str:
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": "You are careful, concise, and evidence-bound. Never invent document facts or alter extracted values."},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
         ],
-        "options": {"temperature": 0.1, "num_ctx": 8192},
+        "options": {"temperature": temperature, "num_ctx": 8192},
     }
     try:
         async with httpx.AsyncClient(timeout=120) as client:
