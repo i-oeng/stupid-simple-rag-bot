@@ -10,6 +10,8 @@ API_URL = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
 STATUS_FLOW = ["New", "Parsed", "Needs Review", "Approved", "Sent"]
 DEMO_CASES = ["utility_bill", "contract", "invoice", "incomplete"]
 LABEL_OVERRIDES = {
+    "business_purpose": "Business Purpose",
+    "contract_terms_found": "Contract Terms Found",
     "case_needs_review": "Case Needs Review",
     "category_or_rate": "Category / Rate",
     "counterparty": "Counterparty",
@@ -20,7 +22,13 @@ LABEL_OVERRIDES = {
     "document_type": "Document Type",
     "document_type_detected": "Document Type Detected",
     "financial_statement": "Financial Statement",
+    "governing_law": "Governing Law",
     "identifier_present": "Identifier Present",
+    "term": "Term",
+    "survival_period": "Survival Period",
+    "signature_status": "Signature Status",
+    "signature_blocks_found": "Signature Blocks Found",
+    "return_or_destruction": "Return / Destruction",
     "kwh": "kWh",
     "low_confidence_count": "Low Confidence Count",
     "logo_candidate": "Logo Candidate",
@@ -196,12 +204,12 @@ def case_label(case: Dict[str, Any]) -> str:
 
 
 def safe_filename(case: Dict[str, Any], suffix: str, extension: str) -> str:
-    title = case_title(case)
-    title = os.path.splitext(os.path.basename(title))[0]
+    metadata = case.get("metadata", {}) or {}
+    title = case.get("source_filename") or metadata.get("suggested_filename") or case_title(case)
+    title = os.path.splitext(os.path.basename(str(title)))[0]
     slug = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_").lower()
-    slug = slug[:42].strip("_") or "document_case"
-    case_id = str(case.get("case_id", ""))[:8] or "case"
-    return f"{slug}_{case_id}_{suffix}.{extension}"
+    slug = slug[:36].strip("_") or "document_case"
+    return f"{slug}_{suffix}.{extension}"
 
 
 def select_case(cases: List[Dict[str, Any]], key: str) -> Optional[Dict[str, Any]]:
@@ -271,21 +279,26 @@ def report_facts(case: Dict[str, Any]) -> Dict[str, Any]:
     summary = case.get("case_summary", {}) or {}
     fields = case.get("extraction", {}).get("fields", {}) or {}
     checklist = case.get("review_checklist", {}) or {}
-    return {
+    facts: Dict[str, Any] = {
+        "Source File": case.get("source_filename"),
         "Document Type": humanize(summary.get("document_type")),
-        "Counterparty": fields.get("counterparty", {}).get("value"),
-        "Document ID": fields.get("document_id_number", {}).get("value"),
-        "Document Date": fields.get("document_date", {}).get("value"),
-        "Service / Site": fields.get("service_or_site", {}).get("value"),
-        "Category / Rate": fields.get("category_or_rate", {}).get("value"),
-        "Total Amount": summary.get("total_amount"),
-        "Period Values": summary.get("period_metric_count"),
-        "Period Total": summary.get("period_metric_total"),
-        "Completeness": f"{float(summary.get('data_completeness') or 0):.0%}",
-        "Low Confidence Fields": summary.get("low_confidence_count"),
-        "Visual Markers": summary.get("visual_markers_found"),
-        "Risk": humanize(checklist.get("risk_level")),
     }
+    for name, payload in fields.items():
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        value = payload.get("value")
+        if value not in [None, ""]:
+            facts[humanize(name)] = value
+    if summary.get("period_metric_count"):
+        facts["Period Values"] = summary.get("period_metric_count")
+        facts["Period Total"] = summary.get("period_metric_total")
+    if summary.get("total_amount"):
+        facts["Total Amount"] = summary.get("total_amount")
+    facts["Completeness"] = f"{float(summary.get('data_completeness') or 0):.0%}"
+    facts["Low Confidence Fields"] = summary.get("low_confidence_count")
+    facts["Visual Markers"] = summary.get("visual_markers_found")
+    facts["Risk"] = humanize(checklist.get("risk_level"))
+    return facts
 
 
 st.title("Local DocumentOps Automation")
@@ -335,7 +348,7 @@ intake_tab, ops_tab, board_tab, review_tab, settings_tab, report_tab, audit_tab 
     "Operations",
     "Status Board",
     "Review Queue",
-    "Settings & Diff",
+    "Review Settings",
     "Report",
     "Audit",
 ])
@@ -356,13 +369,13 @@ with intake_tab:
                 for doc in processed.get("documents", []):
                     created_case = api_post(
                         f"/cases/from-document/{doc['document_id']}",
-                        json={"client_info": client_info, "metadata": metadata, "review_settings": review_settings, "actor": "streamlit"},
-                        timeout=120,
+                        json={"client_info": client_info, "metadata": metadata, "review_settings": review_settings, "auto_prepare": True, "actor": "streamlit"},
+                        timeout=300,
                     )
                     created.append(created_case)
                 if created:
                     st.session_state["selected_case_id"] = created[-1].get("case_id")
-                st.success(f"Created {len(created)} case(s)")
+                st.success(f"Created and prepared {len(created)} case(s)")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Processing failed: {exc}")
@@ -431,15 +444,7 @@ with review_tab:
     if not selected:
         st.info("Create a document case from Intake first.")
     else:
-        title_cols = st.columns([3, 1])
-        title_cols[0].markdown(f"#### {case_title(selected)}")
-        if title_cols[1].button("Name with Qwen", key=f"title_{selected['case_id']}"):
-            try:
-                updated = api_post(f"/cases/{selected['case_id']}/title?actor=streamlit", timeout=180)
-                st.session_state["selected_case_id"] = updated.get("case_id")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not generate case name: {exc}")
+        st.markdown(f"#### {case_title(selected)}")
 
         summary = selected.get("case_summary", {})
         risk = selected.get("review_checklist", {}).get("risk_level", "unknown")
@@ -503,7 +508,7 @@ with review_tab:
         st.dataframe(display_rows(selected.get("review_checklist", {}).get("checks", [])), width='stretch', hide_index=True)
 
 with settings_tab:
-    st.subheader("Settings & Diff")
+    st.subheader("Review Settings")
     selected = select_case(cases, "settings_case")
     if selected:
         current = selected.get("review_settings", {})
@@ -517,27 +522,35 @@ with settings_tab:
             api_patch(f"/cases/{selected['case_id']}/settings", {"actor": "streamlit", "review_settings": {"materiality_amount": new_materiality, "confidence_threshold": new_conf, "review_sla_hours": new_sla, "currency": currency, "require_visual_marker": require_marker}})
             st.rerun()
         versions = selected.get("versions", [])
-        if len(versions) >= 2:
-            version_ids = [version["version_id"] for version in versions]
-            left_version = st.selectbox("Left version", version_ids, index=0)
-            right_version = st.selectbox("Right version", version_ids, index=len(version_ids) - 1)
-            diff = api_get(f"/cases/{selected['case_id']}/diff", left=left_version, right=right_version)
-            rows = [{"metric": key, "left": payload.get("left"), "right": payload.get("right"), "delta": payload.get("delta")} for key, payload in diff.get("summary_delta", {}).items()]
+        if versions:
+            st.markdown("#### Settings History")
+            rows = [
+                {
+                    "version": version.get("version_id"),
+                    "created_at": version.get("created_at"),
+                    "label": version.get("label"),
+                    "completeness": version.get("case_summary", {}).get("data_completeness"),
+                    "risk_amount": version.get("case_summary", {}).get("total_amount"),
+                }
+                for version in versions
+            ]
             st.dataframe(display_rows(rows), width='stretch', hide_index=True)
-        else:
-            st.info("Create a settings or correction version to compare.")
 
 with report_tab:
     st.subheader("Report")
     selected = select_case(cases, "report_case")
     if selected:
         facts = report_facts(selected)
-        st.markdown("#### Verified Values Used")
+        st.markdown("#### Extracted Details Used")
         st.dataframe(pd.DataFrame([facts]), width='stretch', hide_index=True)
 
         report_key = f"ai_report_{selected['case_id']}"
         pdf_key = f"{report_key}_pdf"
-        if st.button("Generate report with Qwen", type="primary"):
+        saved_report = (selected.get("ai_report") or {}).get("text", "")
+        if report_key not in st.session_state and saved_report:
+            st.session_state[report_key] = saved_report
+            st.session_state[f"{report_key}_model"] = (selected.get("ai_report") or {}).get("model", "")
+        if st.button("Regenerate report with Qwen", type="primary"):
             try:
                 result = api_post(f"/cases/{selected['case_id']}/report-text", timeout=180)
                 st.session_state[report_key] = result.get("report_text", "")
@@ -548,13 +561,22 @@ with report_tab:
 
         report_text = st.session_state.get(report_key, "")
         if not report_text:
-            st.info("Generate a report to review and download the Qwen-written version.")
+            st.info("No prepared report yet.")
         edited_report_text = st.text_area("Report text", report_text, height=440)
         if edited_report_text != report_text:
             report_text = edited_report_text
             st.session_state[report_key] = edited_report_text
             st.session_state.pop(pdf_key, None)
         if report_text:
+            if not st.session_state.get(pdf_key):
+                try:
+                    st.session_state[pdf_key] = api_post_download(
+                        f"/cases/{selected['case_id']}/report-pdf",
+                        json={"report_text": report_text},
+                        timeout=180,
+                    )
+                except Exception as exc:
+                    st.warning(f"PDF export is not ready: {exc}")
             download_cols = st.columns([1, 1, 3])
             with download_cols[0]:
                 st.download_button(
@@ -564,15 +586,6 @@ with report_tab:
                     mime="text/markdown",
                 )
             with download_cols[1]:
-                if st.button("Prepare PDF"):
-                    try:
-                        st.session_state[pdf_key] = api_post_download(
-                            f"/cases/{selected['case_id']}/report-pdf",
-                            json={"report_text": report_text},
-                            timeout=180,
-                        )
-                    except Exception as exc:
-                        st.error(f"PDF export failed: {exc}")
                 if st.session_state.get(pdf_key):
                     st.download_button(
                         "Download PDF",

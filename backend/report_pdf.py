@@ -21,7 +21,7 @@ BORDER = (0.78, 0.84, 0.90)
 def build_case_report_pdf(case: Dict[str, Any], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     case_id = case.get("case_id", "case")
-    output_path = output_dir / f"{_safe_slug(case)}_{str(case_id)[:8]}_case_report.pdf"
+    output_path = output_dir / f"{_safe_slug(case)}_{str(case_id)[:6]}_case.pdf"
     doc = fitz.open()
     state = {"page": doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT), "y": MARGIN}
     _header(state, case)
@@ -45,12 +45,12 @@ def build_case_report_pdf(case: Dict[str, Any], output_dir: Path) -> Path:
 def build_generated_report_pdf(case: Dict[str, Any], report_text: str, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     case_id = case.get("case_id", "case")
-    output_path = output_dir / f"{_safe_slug(case)}_{str(case_id)[:8]}_qwen_report.pdf"
+    output_path = output_dir / f"{_safe_slug(case)}_{str(case_id)[:6]}_report.pdf"
     doc = fitz.open()
     state = {"page": doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT), "y": MARGIN}
     _header(state, case, title="Generated Document Report")
     _metrics(state, case)
-    _section(state, "Verified Values")
+    _section(state, "Extracted Details")
     _key_value_rows(state, _verified_rows(case))
     _section(state, "Generated Report")
     _markdown_report(state, report_text)
@@ -224,27 +224,35 @@ def _verified_rows(case: Dict[str, Any]) -> List[tuple]:
     fields = extraction.get("fields", {})
     summary = case.get("case_summary", {})
     checklist = case.get("review_checklist", {})
-    return [
+    rows = [
         ("Source file", case.get("source_filename", "")),
         ("Document type", _humanize(summary.get("document_type") or extraction.get("document_type", "unknown"))),
-        ("Counterparty", fields.get("counterparty", {}).get("value")),
-        ("Document ID", fields.get("document_id_number", {}).get("value")),
-        ("Document date", fields.get("document_date", {}).get("value")),
-        ("Service / site", fields.get("service_or_site", {}).get("value")),
-        ("Category / rate", fields.get("category_or_rate", {}).get("value")),
-        ("Total amount", _num(summary.get("total_amount"))),
-        ("Period values", summary.get("period_metric_count", 0)),
-        ("Period total", _num(summary.get("period_metric_total"))),
-        ("Risk", _humanize(checklist.get("risk_level", "unknown"))),
     ]
+    for name, payload in fields.items():
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        value = payload.get("value")
+        if value in [None, ""]:
+            continue
+        rows.append((_humanize(name), _format_value(value)))
+    if summary.get("period_metric_count"):
+        rows.append(("Period values", summary.get("period_metric_count", 0)))
+        rows.append(("Period total", _num(summary.get("period_metric_total"))))
+    if summary.get("total_amount"):
+        rows.append(("Total amount", _num(summary.get("total_amount"))))
+    rows.extend([
+        ("Completeness", f"{float(summary.get('data_completeness') or 0):.0%}"),
+        ("Risk", _humanize(checklist.get("risk_level", "unknown"))),
+    ])
+    return rows[:18]
 
 
 def _safe_slug(case: Dict[str, Any]) -> str:
     metadata = case.get("metadata", {}) or {}
-    title = metadata.get("display_title") or case.get("source_filename") or "document_case"
+    title = case.get("source_filename") or metadata.get("suggested_filename") or metadata.get("display_title") or "document_case"
     title = Path(str(title)).stem
     slug = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_").lower()
-    return (slug[:42].strip("_") or "document_case")
+    return (slug[:36].strip("_") or "document_case")
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -267,6 +275,14 @@ def _num(value: Any) -> str:
         return f"{float(value):,.2f}"
     except (TypeError, ValueError):
         return "0.00"
+
+
+def _format_value(value: Any) -> str:
+    if isinstance(value, float):
+        return _num(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
 
 
 def _wrap(text: str, width: int) -> List[str]:

@@ -142,19 +142,7 @@ class DocumentCaseService:
         document_type = self._detect_document_type(lower_text)
         metrics = self._extract_period_metrics(text, tables)
         total_amount = self._extract_money(text, tables)
-        date_value = self._find_value(text, tables, ["invoice date", "bill date", "effective date", "contract date", "due date", "expiry date", "date"])
-        if not date_value:
-            match = DATE_RE.search(text)
-            date_value = match.group(1).strip() if match else None
-
-        fields = {
-            "document_id_number": self._field(self._find_value(text, tables, ["document id", "reference", "ref", "invoice number", "invoice no", "contract number", "account number", "account no"]), 0.76),
-            "counterparty": self._field(self._find_value(text, tables, ["customer name", "customer", "client", "vendor", "supplier", "counterparty", "party", "name"]), 0.64),
-            "document_date": self._field(date_value, 0.68),
-            "service_or_site": self._field(self._find_value(text, tables, ["service address", "supply address", "site address", "delivery address", "project site"], allow_continuation=True), 0.58),
-            "category_or_rate": self._field(self._find_value(text, tables, ["tariff", "rate class", "plan", "category", "department", "cost center"]), 0.60),
-            "total_amount": self._field(total_amount, 0.88 if total_amount else 0.25),
-        }
+        fields = self._extract_contract_fields(text, tables) if document_type == "contract" else self._extract_operational_fields(text, tables, total_amount)
         return {
             "document_type": document_type,
             "fields": fields,
@@ -168,6 +156,115 @@ class DocumentCaseService:
                 "low_confidence_count": len([item for item in fields.values() if item.get("confidence", 0) < LOW_CONFIDENCE_THRESHOLD]),
             },
         }
+
+    def _extract_operational_fields(self, text: str, tables: List[Dict[str, Any]], total_amount: Optional[float]) -> Dict[str, Dict[str, Any]]:
+        date_value = self._find_value(text, tables, ["invoice date", "bill date", "effective date", "contract date", "due date", "expiry date", "date"])
+        if not date_value:
+            match = DATE_RE.search(text)
+            date_value = match.group(1).strip() if match else None
+        return {
+            "document_id_number": self._field(self._find_value(text, tables, ["document id", "reference", "ref", "invoice number", "invoice no", "contract number", "account number", "account no"]), 0.76),
+            "counterparty": self._field(self._find_value(text, tables, ["customer name", "customer", "client", "vendor", "supplier", "counterparty", "party", "name"]), 0.64),
+            "document_date": self._field(date_value, 0.68),
+            "service_or_site": self._field(self._find_value(text, tables, ["service address", "supply address", "site address", "delivery address", "project site"], allow_continuation=True), 0.58),
+            "category_or_rate": self._field(self._find_value(text, tables, ["tariff", "rate class", "plan", "category", "department", "cost center"]), 0.60),
+            "total_amount": self._field(total_amount, 0.88 if total_amount else 0.25),
+        }
+
+    def _extract_contract_fields(self, text: str, tables: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        fields: Dict[str, Dict[str, Any]] = {
+            "document_id_number": self._field(self._contract_identifier(text) or self._find_value(text, tables, ["contract number", "contract no", "contract reference", "contract ref", "reference"]), 0.92),
+            "counterparty": self._field(self._contract_parties(text) or self._find_value(text, tables, ["counterparty", "party"]), 0.90),
+            "document_date": self._field(self._contract_effective_date(text) or self._find_value(text, tables, ["effective date", "contract date", "date"]), 0.90),
+            "business_purpose": self._field(self._business_purpose(text), 0.86),
+            "term": self._field(self._contract_term(text), 0.84),
+            "survival_period": self._field(self._survival_period(text), 0.82),
+            "return_or_destruction": self._field(self._return_or_destruction(text), 0.82),
+            "governing_law": self._field(self._governing_law(text), 0.84),
+            "signature_status": self._field(self._signature_status(text), 0.76),
+        }
+        total_amount = self._extract_money(text, tables)
+        if total_amount is not None:
+            fields["total_amount"] = self._field(total_amount, 0.88)
+        return fields
+
+    def _contract_identifier(self, text: str) -> Optional[str]:
+        patterns = [
+            r"(?i)contract\s+(?:reference\s+)?(?:no\.?|number|ref\.?)\s*[:#.-]?\s*([A-Z0-9][A-Z0-9-]{3,})",
+            r"(?i)contract\s+reference\s+no\.?\s*[:#.-]?\s*([A-Z0-9][A-Z0-9-]{3,})",
+        ]
+        return self._first_match(text, patterns)
+
+    def _contract_effective_date(self, text: str) -> Optional[str]:
+        return self._first_match(text, [
+            r"(?i)effective\s+date\s*[:#.-]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(?i)effective\s*[:#.-]?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+        ])
+
+    def _contract_parties(self, text: str) -> Optional[str]:
+        block_match = re.search(r"(?is)by\s+and\s+between:\s*(.*?)(?:\bEach\s+of\s+the\s+above\b|\bRECITALS\b)", text)
+        block = block_match.group(1) if block_match else text[:1800]
+        parties: List[str] = []
+        company_re = re.compile(r"(?i)\b(?:inc\.?|llc|ltd\.?|limited|corp\.?|corporation|company|group|partners|technologies|consulting)\b")
+        skip_re = re.compile(r"(?i)^(disclosing|receiving|party\s+[ab]|a\s+(?:delaware|new\s+york)\b|page\s+|contract\s+|effective|confidential|mutual|and\s+confidentiality)")
+        for raw_line in block.splitlines():
+            line = self._clean_value(raw_line)
+            if not line or skip_re.search(line):
+                continue
+            if company_re.search(line) and not re.search(r"\d", line):
+                cleaned = line.strip(" .")
+                if cleaned not in parties:
+                    parties.append(cleaned)
+            if len(parties) >= 4:
+                break
+        return "; ".join(parties[:4]) if parties else None
+
+    def _business_purpose(self, text: str) -> Optional[str]:
+        matches = list(re.finditer(r"(?is)Business\s+Purpose\s*:\s*(.*?)(?:\n[A-Z][A-Z /&-]{3,}\n|\nIN\s+WITNESS|$)", text))
+        if matches:
+            return self._clean_clause(matches[-1].group(1), 360)
+        match = re.search(r'(?is)collaboration\s+involving\s+(.*?)(?:\(the\s+"Business Purpose"\)|\.)', text)
+        return self._clean_clause(match.group(0), 260) if match else None
+
+    def _contract_term(self, text: str) -> Optional[str]:
+        return self._clean_clause(self._first_match(text, [
+            r"(?is)remain\s+in\s+full\s+force\s+and\s+effect\s+for\s+a\s+period\s+of\s+(.{1,100}?years?)(?:,|\.)",
+            r"(?is)Term\.\s*(.*?)(?:\n3\.2|\n\d+\.\d+|$)",
+        ]), 260)
+
+    def _survival_period(self, text: str) -> Optional[str]:
+        clause = self._first_match(text, [r"(?is)obligations\s+of\s+confidentiality\s+with\s+respect\s+to\s+Confidential\s+Information\s+disclosed\s+during\s+the\s+Term\s+shall\s+survive\s+and\s+remain\s+in\s+effect\s+for\s+a\s+period\s+of\s+(.{1,120}?years?)(?:\s+following|,|\.)"])
+        trade_secret = "Trade secrets survive indefinitely" if re.search(r"(?i)trade\s+secrets\s+shall\s+survive\s+indefinitely", text) else None
+        parts = [part for part in [self._clean_clause(clause, 180), trade_secret] if part]
+        return "; ".join(parts) if parts else None
+
+    def _return_or_destruction(self, text: str) -> Optional[str]:
+        clause = self._first_match(text, [r"(?is)Return\s+or\s+Destruction\.\s*(.*?)(?:\n4\.|\n\d+\.\d+|$)"])
+        return self._clean_clause(clause, 420)
+
+    def _governing_law(self, text: str) -> Optional[str]:
+        clause = self._first_match(text, [r"(?is)Governing\s+Law\.\s*(.*?)(?:\n7\.2|\n\d+\.\d+|$)"])
+        return self._clean_clause(clause, 420)
+
+    def _signature_status(self, text: str) -> Optional[str]:
+        if re.search(r"(?i)authorized\s+signature", text):
+            has_blank_lines = "________________________________" in text
+            return "Signature blocks present; signatures not detected" if has_blank_lines else "Signature blocks present"
+        return None
+
+    def _first_match(self, text: str, patterns: List[str]) -> Optional[str]:
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return self._clean_value(match.group(1))
+        return None
+
+    def _clean_clause(self, value: Optional[str], limit: int) -> Optional[str]:
+        cleaned = self._clean_value(value)
+        if not cleaned:
+            return None
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        return cleaned[:limit].rstrip(" ,;")
 
     def build_case_summary(self, extraction: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
         metrics = extraction.get("period_metrics", [])
@@ -191,15 +288,28 @@ class DocumentCaseService:
 
     def build_review_checklist(self, extraction: Dict[str, Any], summary: Dict[str, Any], client_info: Dict[str, Any], metadata: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
         fields = extraction.get("fields", {})
+        document_type = extraction.get("document_type")
         checks = [
             self._check("document_type_detected", extraction.get("document_type") != "unknown", "Document type could be classified"),
             self._check("identifier_present", bool(fields.get("document_id_number", {}).get("value")) or not settings.get("require_identifier"), "Document/reference/account identifier present"),
             self._check("counterparty_present", bool(fields.get("counterparty", {}).get("value") or client_info.get("company")) or not settings.get("require_counterparty"), "Counterparty/client/vendor name present"),
             self._check("date_or_term_present", bool(fields.get("document_date", {}).get("value")) or not settings.get("require_date_or_term"), "Date, due date, or term present"),
-            self._check("structured_values_found", summary.get("period_metric_count", 0) > 0 or summary.get("total_amount", 0) > 0, "At least one useful metric or amount found"),
+        ]
+        if document_type == "contract":
+            key_terms = [
+                fields.get("business_purpose", {}).get("value"),
+                fields.get("term", {}).get("value"),
+                fields.get("return_or_destruction", {}).get("value"),
+                fields.get("governing_law", {}).get("value"),
+            ]
+            checks.append(self._check("contract_terms_found", len([value for value in key_terms if value]) >= 2, "Business purpose, term, return/destruction, or governing-law terms found"))
+            checks.append(self._check("signature_blocks_found", bool(fields.get("signature_status", {}).get("value")), "Signature block or signature status identified"))
+        else:
+            checks.append(self._check("structured_values_found", summary.get("period_metric_count", 0) > 0 or summary.get("total_amount", 0) > 0, "At least one useful metric or amount found"))
+        checks.extend([
             self._check("visual_marker_requirement", not settings.get("require_visual_marker") or summary.get("visual_markers_found", 0) > 0, "Stamp, signature, or logo marker detected when required"),
             self._check("review_context_present", bool(metadata.get("owner") or metadata.get("department") or client_info.get("company")), "Owner, department, or client context present"),
-        ]
+        ])
         failed = [check["name"] for check in checks if check["status"] != "pass"]
         risk_level = "low" if not failed else "medium" if len(failed) <= 2 else "high"
         return {"risk_level": risk_level, "checks": checks, "failed_checks": failed}
@@ -251,9 +361,42 @@ class DocumentCaseService:
             raise ValueError("Case not found")
         previous = case.setdefault("metadata", {}).get("display_title")
         case["metadata"]["display_title"] = cleaned
+        case["metadata"]["suggested_filename"] = f"{self._slug(cleaned)}.pdf"
         case["updated_at"] = utc_now()
         self._save_case(case)
-        self._audit(case_id, actor, "title_updated", {"from": previous, "to": cleaned})
+        self._audit(case_id, actor, "title_updated", {"from": previous, "to": cleaned, "suggested_filename": case["metadata"]["suggested_filename"]})
+        return case
+
+    def update_ai_report(self, case_id: str, report_text: str, model: str, facts: Optional[Dict[str, Any]] = None, actor: str = "system") -> Dict[str, Any]:
+        cleaned = str(report_text or "").strip()
+        if not cleaned:
+            raise ValueError("Report text cannot be empty")
+        case = self.get_case(case_id)
+        if not case:
+            raise ValueError("Case not found")
+        case["ai_report"] = {
+            "text": cleaned,
+            "model": model,
+            "facts": facts or {},
+            "generated_at": utc_now(),
+        }
+        case["updated_at"] = utc_now()
+        self._save_case(case)
+        self._audit(case_id, actor, "ai_report_generated", {"model": model, "characters": len(cleaned)})
+        return case
+
+    def record_automation_error(self, case_id: str, step: str, error: str, actor: str = "system") -> Dict[str, Any]:
+        case = self.get_case(case_id)
+        if not case:
+            raise ValueError("Case not found")
+        case.setdefault("metadata", {}).setdefault("automation_errors", []).append({
+            "timestamp": utc_now(),
+            "step": step,
+            "error": str(error)[:500],
+        })
+        case["updated_at"] = utc_now()
+        self._save_case(case)
+        self._audit(case_id, actor, "automation_error", {"step": step, "error": str(error)[:500]})
         return case
 
     def update_settings(self, case_id: str, settings: Dict[str, Any], actor: str = "user") -> Dict[str, Any]:
@@ -338,6 +481,7 @@ class DocumentCaseService:
     def _refresh_case(self, case: Dict[str, Any], label: str) -> None:
         extraction = case.get("extraction", {})
         settings = case.get("review_settings", {})
+        case.pop("ai_report", None)
         case["case_summary"] = self.build_case_summary(extraction, settings)
         case["review_checklist"] = self.build_review_checklist(extraction, case["case_summary"], case.get("client_info", {}), case.get("metadata", {}), settings)
         case["generated_report"] = self.generate_report(case["case_id"], {"filename": case.get("source_filename")}, case.get("client_info", {}), case.get("metadata", {}), extraction, case["case_summary"], case["review_checklist"])
@@ -714,6 +858,10 @@ class DocumentCaseService:
         key = self._label_key(value)
         return key in {self._label_key(label) for label in LABEL_STOP_TERMS}
 
+    def _slug(self, value: Any) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(value or "")).strip("_").lower()
+        return (slug[:36].strip("_") or "document_case")
+
     def _field(self, value: Any, confidence: float) -> Dict[str, Any]:
         return {"value": value, "confidence": round(confidence if value not in [None, ""] else min(confidence, 0.25), 2)}
 
@@ -725,9 +873,10 @@ class DocumentCaseService:
     def _data_completeness(self, extraction: Dict[str, Any]) -> float:
         fields = extraction.get("fields", {})
         present = len([field for field in fields.values() if field.get("value") not in [None, ""]])
-        metric_score = 1 if extraction.get("period_metrics") else 0
-        denominator = max(len(fields) + 1, 1)
-        return round((present + metric_score) / denominator, 2)
+        requires_structured_values = extraction.get("document_type") not in {"contract", "operational_document"}
+        metric_score = 1 if requires_structured_values and extraction.get("period_metrics") else 0
+        denominator = len(fields) + (1 if requires_structured_values else 0)
+        return round((present + metric_score) / max(denominator, 1), 2)
 
     def _check(self, name: str, passed: bool, evidence: str) -> Dict[str, str]:
         return {"name": name, "status": "pass" if passed else "needs_review", "evidence": evidence}

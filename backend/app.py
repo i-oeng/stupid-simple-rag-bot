@@ -54,6 +54,7 @@ class CaseCreateRequest(BaseModel):
     client_info: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     review_settings: Dict[str, Any] = Field(default_factory=dict)
+    auto_prepare: bool = False
     actor: str = "user"
 
 
@@ -233,13 +234,16 @@ async def create_document_case(document_id: str, request: CaseCreateRequest = Ca
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     try:
-        return case_service.create_from_document(
+        item = case_service.create_from_document(
             document=document,
             client_info=request.client_info,
             metadata=request.metadata,
             review_settings=request.review_settings,
             actor=request.actor,
         )
+        if request.auto_prepare:
+            item = await _prepare_case_with_qwen(item["case_id"], actor=request.actor)
+        return item
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -311,16 +315,7 @@ async def generate_case_title(case_id: str, actor: str = "streamlit"):
     item = case_service.get_case(case_id)
     if not item:
         raise HTTPException(status_code=404, detail="Case not found")
-    facts = _case_report_facts(item)
-    prompt = f"""Create a short, professional title for this document review case.
-Use only the supplied facts. Do not include the case ID. Do not use quotes.
-Return only the title, maximum 8 words.
-
-Facts:
-{facts}
-"""
-    title = (await _ask_ollama(prompt)).strip().strip('"').strip("'")
-    title = title.splitlines()[0] if title else ""
+    title = await _generate_case_title_text(item)
     try:
         return case_service.update_title(case_id, title, actor=actor)
     except ValueError as exc:
@@ -332,20 +327,12 @@ async def generate_polished_case_report(case_id: str):
     item = case_service.get_case(case_id)
     if not item:
         raise HTTPException(status_code=404, detail="Case not found")
-    facts = _case_report_facts(item)
-    prompt = f"""You are drafting a concise operational document review report.
-Use only the supplied facts and structured case data. Do not invent facts, do not change numbers, and do not add unsupported conclusions.
-Every numeric value in your report must be copied exactly from "Facts to preserve exactly". If a value is missing or zero because it was not extracted, say "Not extracted" instead of guessing.
-Return a clean Markdown report with sections: Executive Summary, Verified Numbers, Extracted Fields, Risks, Missing Items, Recommended Next Actions.
-
-Facts to preserve exactly:
-{facts}
-
-Structured case data:
-{item}
-"""
-    answer = await _ask_ollama(prompt)
-    return {"case_id": case_id, "model": OLLAMA_MODEL, "facts": facts, "report_text": answer}
+    payload = await _generate_case_report_text(item)
+    try:
+        updated = case_service.update_ai_report(case_id, payload["report_text"], OLLAMA_MODEL, facts=payload["facts"], actor="streamlit")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"case_id": case_id, "model": OLLAMA_MODEL, "facts": payload["facts"], "report_text": payload["report_text"], "case": updated}
 
 
 @app.post("/cases/{case_id}/report-pdf")
@@ -411,7 +398,7 @@ async def root():
         "endpoints": {
             "POST /process": "Upload PDFs and receive extracted chunks, QR data, visual-marker candidates, tables, validation, and report IDs",
             "POST /demo/seed": "Generate a fresh Qwen demo document case",
-            "POST /cases/from-document/{document_id}": "Create a document case from a processed PDF",
+            "POST /cases/from-document/{document_id}": "Create a document case from a processed PDF; set auto_prepare=true to generate title and report text",
             "GET /cases/board": "Status board grouped by workflow stage",
             "PATCH /cases/{case_id}/extraction": "Correct extracted fields and structured metrics",
             "PATCH /cases/{case_id}/settings": "Edit review thresholds and create a new version",
@@ -436,30 +423,150 @@ def _format_search_context(results: List[dict]) -> str:
     return "\n\n".join(lines)
 
 
+async def _prepare_case_with_qwen(case_id: str, actor: str = "system") -> Dict[str, Any]:
+    item = case_service.get_case(case_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not (item.get("metadata") or {}).get("display_title"):
+        try:
+            title = await _generate_case_title_text(item)
+            item = case_service.update_title(case_id, title, actor=actor)
+        except Exception as exc:
+            item = case_service.record_automation_error(case_id, "title", _error_text(exc), actor=actor)
+
+    try:
+        latest = case_service.get_case(case_id) or item
+        payload = await _generate_case_report_text(latest)
+        item = case_service.update_ai_report(case_id, payload["report_text"], OLLAMA_MODEL, facts=payload["facts"], actor=actor)
+    except Exception as exc:
+        item = case_service.record_automation_error(case_id, "report", _error_text(exc), actor=actor)
+
+    return item
+
+
+async def _generate_case_title_text(item: Dict[str, Any]) -> str:
+    facts = _case_report_facts(item)
+    fallback = _fallback_case_title(item)
+    prompt = f"""Create a short, professional title for this document review case.
+Use only the supplied facts. Do not include the case ID. Do not use quotes.
+Prefer the real document type, parties/counterparty, and document reference.
+Return only the title, maximum 7 words.
+
+Facts:
+{facts}
+"""
+    title = (await _ask_ollama(prompt)).strip().strip('"').strip("'")
+    title = title.splitlines()[0] if title else ""
+    return _clean_case_title(title, fallback)
+
+
+async def _generate_case_report_text(item: Dict[str, Any]) -> Dict[str, Any]:
+    facts = _case_report_facts(item)
+    prompt = f"""You are drafting an evidence-bound operational document review report.
+Use only the supplied extracted fields and document excerpts. Do not invent facts, do not change numbers, and do not add unsupported legal conclusions.
+Do not use markdown tables because this report is exported to PDF. Use short paragraphs and bullets.
+If a value is missing, write "Not extracted".
+
+For contracts, the useful report is not a numbers report. Summarize the document substance: parties, purpose, effective date, term/survival, confidentiality duties, return/destruction, governing law or dispute venue, signature status, and review flags.
+For bills or invoices, emphasize account/vendor, dates, totals, usage/line metrics, low-confidence values, and review flags.
+
+Return Markdown with these exact sections:
+## Executive Summary
+## Important Details
+## Extracted Fields
+## Risks And Review Flags
+## Recommended Next Actions
+
+Facts and source excerpts:
+{facts}
+"""
+    answer = await _ask_ollama(prompt)
+    return {"facts": facts, "report_text": answer}
+
+
+def _error_text(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return str(exc)
+
+
 def _case_report_facts(item: Dict[str, Any]) -> Dict[str, Any]:
     extraction = item.get("extraction", {})
     fields = extraction.get("fields", {})
     summary = item.get("case_summary", {})
     checklist = item.get("review_checklist", {})
     return {
-        "case_id": item.get("case_id"),
         "source_filename": item.get("source_filename"),
         "document_type": summary.get("document_type") or extraction.get("document_type"),
-        "counterparty": fields.get("counterparty", {}).get("value"),
-        "document_id_number": fields.get("document_id_number", {}).get("value"),
-        "document_date": fields.get("document_date", {}).get("value"),
-        "service_or_site": fields.get("service_or_site", {}).get("value"),
-        "category_or_rate": fields.get("category_or_rate", {}).get("value"),
-        "total_amount": summary.get("total_amount"),
-        "period_metric_count": summary.get("period_metric_count"),
-        "period_metric_total": summary.get("period_metric_total"),
-        "data_completeness": summary.get("data_completeness"),
-        "low_confidence_count": summary.get("low_confidence_count"),
-        "qr_codes_found": summary.get("qr_codes_found"),
-        "visual_markers_found": summary.get("visual_markers_found"),
-        "risk_level": checklist.get("risk_level"),
-        "failed_checks": checklist.get("failed_checks", []),
+        "extracted_fields": {
+            name: {"value": payload.get("value"), "confidence": payload.get("confidence")}
+            for name, payload in fields.items()
+            if isinstance(payload, dict)
+        },
+        "period_metrics": extraction.get("period_metrics", [])[:18],
+        "summary": {
+            "total_amount": summary.get("total_amount"),
+            "period_metric_count": summary.get("period_metric_count"),
+            "period_metric_total": summary.get("period_metric_total"),
+            "data_completeness": summary.get("data_completeness"),
+            "low_confidence_count": summary.get("low_confidence_count"),
+            "qr_codes_found": summary.get("qr_codes_found"),
+            "visual_markers_found": summary.get("visual_markers_found"),
+            "visual_marker_types": summary.get("visual_marker_types", {}),
+            "risk_level": checklist.get("risk_level"),
+            "failed_checks": checklist.get("failed_checks", []),
+        },
+        "review_checks": checklist.get("checks", []),
+        "document_excerpts": _case_document_excerpts(item),
     }
+
+
+def _case_document_excerpts(item: Dict[str, Any], max_chars: int = 5200) -> List[Dict[str, Any]]:
+    document = processor.get_document(str(item.get("document_id") or ""))
+    if not document:
+        return []
+    excerpts = []
+    used = 0
+    for chunk in document.get("chunks", [])[:12]:
+        text = re.sub(r"\s+", " ", str(chunk.get("text") or "")).strip()
+        if not text:
+            continue
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        snippet = text[:remaining].rstrip()
+        used += len(snippet)
+        excerpts.append({"page": chunk.get("page"), "text": snippet})
+    return excerpts
+
+
+def _fallback_case_title(item: Dict[str, Any]) -> str:
+    extraction = item.get("extraction", {})
+    fields = extraction.get("fields", {})
+    document_type = str((item.get("case_summary", {}) or {}).get("document_type") or extraction.get("document_type") or "document").replace("_", " ").title()
+    source = Path(str(item.get("source_filename") or "")).stem.replace("_", " ").strip()
+    document_id = fields.get("document_id_number", {}).get("value")
+    counterparty = fields.get("counterparty", {}).get("value")
+    if source and source.lower() not in {"document", "document case"}:
+        return source
+    if counterparty and document_id:
+        first_party = str(counterparty).split(";")[0].split(",")[0].strip()
+        return f"{document_type} - {first_party}"
+    if document_id:
+        return f"{document_type} - {document_id}"
+    if counterparty:
+        return f"{document_type} - {counterparty}"
+    return "Document Review"
+
+
+def _clean_case_title(title: str, fallback: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', " ", str(title or "")).strip(" .")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned or len(cleaned.split()) > 9 or len(cleaned) > 64:
+        cleaned = fallback
+    cleaned = re.sub(r"\s+", " ", str(cleaned or "Document Review")).strip(" .")
+    return cleaned[:64].rstrip(" -_") or "Document Review"
 
 
 async def _generate_qwen_demo_payload(case: str) -> Dict[str, Any]:

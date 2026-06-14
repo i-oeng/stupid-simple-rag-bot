@@ -48,6 +48,56 @@ def test_demo_variants_cover_contract_invoice_and_incomplete(tmp_path):
     assert "visual_marker_requirement" in incomplete["review_checklist"]["failed_checks"]
 
 
+def test_contract_extraction_uses_preamble_and_key_terms(tmp_path):
+    service = make_service(tmp_path)
+    text = """
+MUTUAL NON-DISCLOSURE AGREEMENT
+Contract No.: NDA-2026-00391
+Effective Date: June 14, 2026
+This Mutual Non-Disclosure Agreement is entered into as of June 14, 2026, by and between:
+DISCLOSING / RECEIVING PARTY A
+DISCLOSING / RECEIVING PARTY B
+Nexora Technologies, Inc.
+a Delaware corporation
+Meridian Consulting Group, LLC
+a New York limited liability company
+Each of the above is individually referred to herein as a Party.
+Business Purpose: Evaluation of a potential technology licensing and co-development partnership between the Parties, including joint feasibility studies, technical due diligence, and commercial term negotiations.
+3.1 Term. This Agreement shall commence on the Effective Date and shall remain in full force and effect for a period of three
+(3) years, unless earlier terminated by either Party upon thirty (30) days prior written notice.
+3.2 Survival. The obligations of confidentiality with respect to Confidential Information disclosed during the Term shall survive and remain in effect for a period of five (5) years following the date of termination or expiration. Obligations relating to trade secrets shall survive indefinitely.
+3.3 Return or Destruction. Upon termination of this Agreement or upon written request by the Disclosing Party, the Receiving Party shall within fifteen (15) business days return or destroy all tangible materials.
+7.1 Governing Law. This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware. Any dispute shall be subject to the exclusive jurisdiction of the federal and state courts located in Wilmington, Delaware.
+IN WITNESS WHEREOF
+______________________________________
+Authorized Signature
+"""
+    document = {
+        "document_id": "nda-doc",
+        "filename": "NDA_Agreement.pdf",
+        "pages": 3,
+        "qr_codes": [],
+        "visual_markers": [],
+        "tables": [],
+        "chunks": [{"page": 1, "text": text}],
+    }
+
+    item = service.create_from_document(document=document, metadata={"owner": "Legal Ops"}, actor="test")
+    fields = item["extraction"]["fields"]
+    failed = item["review_checklist"]["failed_checks"]
+
+    assert fields["document_id_number"]["value"] == "NDA-2026-00391"
+    assert fields["counterparty"]["value"] == "Nexora Technologies, Inc; Meridian Consulting Group, LLC"
+    assert fields["document_date"]["value"] == "June 14, 2026"
+    assert fields["business_purpose"]["value"].startswith("Evaluation of a potential technology licensing")
+    assert fields["term"]["value"] == "three (3) years"
+    assert fields["survival_period"]["value"] == "five (5) years; Trade secrets survive indefinitely"
+    assert "State of Delaware" in fields["governing_law"]["value"]
+    assert fields["signature_status"]["value"] == "Signature blocks present; signatures not detected"
+    assert "structured_values_found" not in failed
+    assert item["case_summary"]["low_confidence_count"] == 0
+
+
 def test_settings_update_creates_version_and_diff(tmp_path):
     service = make_service(tmp_path)
     item = create_case(service, "invoice")
@@ -68,8 +118,42 @@ def test_title_update_is_saved_and_audited(tmp_path):
     audit = service.audit_log(item["case_id"])
 
     assert updated["metadata"]["display_title"] == "Maintenance Contract Review"
+    assert updated["metadata"]["suggested_filename"] == "maintenance_contract_review.pdf"
     assert service.get_case(item["case_id"])["metadata"]["display_title"] == "Maintenance Contract Review"
     assert any(event["action"] == "title_updated" for event in audit)
+
+
+def test_ai_report_is_saved_and_audited(tmp_path):
+    service = make_service(tmp_path)
+    item = create_case(service, "invoice")
+
+    updated = service.update_ai_report(
+        item["case_id"],
+        "## Executive Summary\nPrepared report.",
+        "qwen3:8b",
+        facts={"total_amount": 18450.75},
+        actor="test",
+    )
+    audit = service.audit_log(item["case_id"])
+
+    assert updated["ai_report"]["text"].startswith("## Executive Summary")
+    assert updated["ai_report"]["model"] == "qwen3:8b"
+    assert updated["ai_report"]["facts"]["total_amount"] == 18450.75
+    assert any(event["action"] == "ai_report_generated" for event in audit)
+
+
+def test_manual_correction_clears_stale_ai_report(tmp_path):
+    service = make_service(tmp_path)
+    item = create_case(service, "invoice")
+    service.update_ai_report(item["case_id"], "Old report", "qwen3:8b", actor="test")
+
+    updated = service.update_extraction(
+        item["case_id"],
+        {"fields": {"total_amount": {"value": 100, "confidence": 1.0}}},
+        actor="reviewer",
+    )
+
+    assert "ai_report" not in updated
 
 
 def test_manual_correction_recalculates_and_audits(tmp_path):
@@ -177,6 +261,6 @@ def test_generated_report_pdf_export(tmp_path):
 
     assert pdf_path.exists()
     assert pdf_path.suffix == ".pdf"
-    assert "qwen_report" in pdf_path.name
+    assert pdf_path.name.endswith("_report.pdf")
     assert len(pdf_path.name) < 90
     assert pdf_path.stat().st_size > 1000

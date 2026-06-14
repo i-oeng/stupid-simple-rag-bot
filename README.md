@@ -11,10 +11,11 @@ The app combines document extraction, QR/stamp/signature/logo detection, confide
 - Detect stamp, signature, and logo candidates with local OpenCV heuristics
 - Classify documents as utility bills, contracts, invoices, financial statements, or operational documents
 - Create review cases with status: `New -> Parsed -> Needs Review -> Approved -> Sent`
+- Automatically name new cases and prepare source-grounded Qwen report drafts after upload
 - Score extracted fields with confidence values and flag low-confidence fields
 - Let reviewers correct fields and structured period metrics
 - Version settings and corrections so changes can be compared
-- Generate Markdown and PDF case reports
+- Generate Markdown and short-name PDF case reports
 - Use Ollama + Qwen optionally for Q&A, summaries, and polished report text
 - Include Streamlit, FastAPI, Telegram, n8n, Supabase schema, and Docker Compose
 
@@ -26,8 +27,8 @@ The app combines document extraction, QR/stamp/signature/logo detection, confide
 4. In `Operations`, show backlog, risk, completeness, status, and amount visibility.
 5. In `Review Queue`, inspect confidence scores, marker candidates, extracted fields, and checklist failures.
 6. Correct a field or structured metric.
-7. In `Settings & Diff`, change review thresholds or require a visual marker, then compare versions.
-8. In `Report`, export a PDF or generate polished report text with Qwen/Ollama.
+7. In `Review Settings`, change review thresholds or require a visual marker and review the settings history.
+8. In `Report`, review the automatically prepared Qwen draft and export Markdown/PDF.
 9. Move the case through `Needs Review -> Approved -> Sent`.
 10. In `Audit`, show traceability.
 

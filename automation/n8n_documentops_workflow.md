@@ -12,6 +12,7 @@ Use this workflow for the demo automation layer.
    - Send uploaded PDF as multipart form field `files`.
 2. HTTP Request: `POST http://localhost:8000/cases/from-document/{document_id}`
    - Include client info, metadata, review settings, and actor as JSON.
+   - Set `auto_prepare: true` so Qwen generates the case title and report text immediately after deterministic extraction.
 3. IF: case status is `Needs Review`
    - True branch: build a Telegram/Slack/email notification payload, then continue to operations logging.
    - False branch: skip the notification payload and continue directly to operations logging.

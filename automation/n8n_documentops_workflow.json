@@ -36,7 +36,7 @@
         "url": "={{($env.BACKEND_URL || 'http://backend:8000') + '/cases/from-document/' + $json.documents[0].document_id}}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ client_info: { company: $json.company || $json.client_company || '', name: $json.contact_name || '', email: $json.contact_email || '' }, metadata: { owner: $json.owner || $json.company || 'Uploaded document', department: $json.department || 'Operations', priority: $json.priority || 'normal' }, review_settings: { materiality_amount: Number($json.materiality_amount || 10000), confidence_threshold: Number($json.confidence_threshold || 0.75), review_sla_hours: Number($json.review_sla_hours || 24), require_visual_marker: String($json.require_visual_marker || '').toLowerCase() === 'true' }, actor: 'n8n' }) }}",
+        "jsonBody": "={{ JSON.stringify({ client_info: { company: $json.company || $json.client_company || '', name: $json.contact_name || '', email: $json.contact_email || '' }, metadata: { owner: $json.owner || $json.company || 'Uploaded document', department: $json.department || 'Operations', priority: $json.priority || 'normal' }, review_settings: { materiality_amount: Number($json.materiality_amount || 10000), confidence_threshold: Number($json.confidence_threshold || 0.75), review_sla_hours: Number($json.review_sla_hours || 24), require_visual_marker: String($json.require_visual_marker || '').toLowerCase() === 'true' }, auto_prepare: true, actor: 'n8n' }) }}",
         "options": {"timeout": 120000}
       },
       "id": "create-case",
