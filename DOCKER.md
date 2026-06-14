@@ -52,6 +52,41 @@ Higher DPI can improve OCR quality but slows processing.
 
 ## Optional Ollama Container
 
+By default Docker Compose expects Ollama to run on the Ubuntu host:
+
+```bash
+ollama pull qwen3:8b
+curl http://localhost:11434/api/tags
+docker compose up -d --force-recreate backend
+docker exec documentops-backend python -c "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags').read().decode()[:500])"
+```
+
+On Linux, `host.docker.internal` is provided through Docker's `host-gateway` mapping in `docker-compose.yml`.
+
+If the container can resolve `host.docker.internal` but gets connection refused, make Ollama listen on the host gateway:
+
+```bash
+sudo systemctl edit ollama
+```
+
+Add:
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+curl http://localhost:11434/api/tags
+docker compose up -d --force-recreate backend
+```
+
+If you prefer an Ollama container instead, stop host Ollama first or free port `11434`, then run:
+
 ```bash
 docker compose --profile ollama up --build
 ```

@@ -4,8 +4,10 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: documentops-backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      OLLAMA_URL: http://ollama:11434
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
       OCR_ENABLED: ${OCR_ENABLED:-true}
       OCR_DPI: ${OCR_DPI:-220}
