@@ -1,5 +1,11 @@
 {
+  "id": "docopsintakev1",
   "name": "DocumentOps Automation Intake",
+  "active": false,
+  "isArchived": false,
+  "createdAt": "2026-06-14T00:00:00.000Z",
+  "updatedAt": "2026-06-14T00:00:00.000Z",
+  "versionId": "8a305f66-6b4e-4ca4-b7b3-21b875c9e0ad",
   "nodes": [
     {
       "parameters": {"httpMethod": "POST", "path": "documentops-intake", "responseMode": "responseNode", "options": {}},
@@ -100,5 +106,12 @@
     "Needs Review?": {"main": [[{"node": "Review Notification Payload", "type": "main", "index": 0}], []]},
     "Operations Row Payload": {"main": [[{"node": "Respond to Upload", "type": "main", "index": 0}]]}
   },
-  "settings": {"executionOrder": "v1"}
+  "settings": {"executionOrder": "v1"},
+  "staticData": null,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "triggerCount": 0,
+  "tags": []
 }

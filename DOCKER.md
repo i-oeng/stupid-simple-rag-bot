@@ -20,6 +20,15 @@ automation/n8n_documentops_workflow.json
 
 Inside n8n, `BACKEND_URL` is already set to `http://backend:8000`.
 
+CLI import:
+
+```bash
+docker exec -i documentops-n8n n8n import:workflow --input=/files/automation/n8n_documentops_workflow.json
+docker restart documentops-n8n
+```
+
+If CLI import fails on a newer n8n image, import the same JSON from the n8n editor UI using **Import from File** or **Import from Clipboard**.
+
 ## OCR Settings
 
 The backend image installs Tesseract OCR and uses it as a fallback when a PDF page has weak native text extraction.

@@ -34,7 +34,7 @@ services:
       - "8501:8501"
 
   n8n:
-    image: n8nio/n8n:latest
+    image: n8nio/n8n:stable
     container_name: documentops-n8n
     environment:
       N8N_HOST: localhost

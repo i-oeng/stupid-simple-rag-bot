@@ -20,3 +20,19 @@
 - Add a Supabase/Airtable/CRM node after `Operations Row Payload`.
 
 The workflow intentionally leaves notification and CRM systems as payload nodes so the demo can run without external credentials.
+
+## CLI Import
+
+From the project root:
+
+```bash
+docker exec -i documentops-n8n n8n import:workflow --input=/files/automation/n8n_documentops_workflow.json
+docker restart documentops-n8n
+```
+
+If your n8n version rejects CLI import, use the editor UI instead:
+
+1. Open n8n.
+2. Select **Import from File** or **Import from Clipboard**.
+3. Import `automation/n8n_documentops_workflow.json`.
+4. Save, then activate the workflow.
