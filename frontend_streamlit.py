@@ -15,8 +15,24 @@ st.markdown(
     """
     <style>
     .block-container {padding-top: 1.25rem; padding-bottom: 2rem;}
-    div[data-testid="stMetric"] {background: #f7f9fc; border: 1px solid #e2e8f0; padding: 0.85rem; border-radius: 8px;}
-    div[data-testid="stMetric"] label {color: #475569;}
+    div[data-testid="stMetric"] {
+        background: #f8fafc;
+        border: 1px solid #cbd5e1;
+        padding: 0.85rem;
+        border-radius: 8px;
+    }
+    div[data-testid="stMetric"] label,
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+        color: #334155 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] div {
+        color: #0f172a !important;
+        font-weight: 750;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        color: #334155 !important;
+    }
     .workflow-card {border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.8rem; margin-bottom: 0.7rem; background: #ffffff;}
     .muted {color: #64748b; font-size: 0.9rem;}
     .badge {display: inline-block; border-radius: 999px; padding: 0.15rem 0.55rem; font-size: 0.8rem; font-weight: 700;}
