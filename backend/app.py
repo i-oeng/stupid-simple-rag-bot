@@ -465,7 +465,7 @@ async def _generate_case_report_text(item: Dict[str, Any]) -> Dict[str, Any]:
     facts = _case_report_facts(item)
     prompt = f"""You are drafting an evidence-bound operational document review report.
 Use only the supplied extracted fields and document excerpts. Do not invent facts, do not change numbers, and do not add unsupported legal conclusions.
-Do not use markdown tables because this report is exported to PDF. Use short paragraphs and bullets.
+Do not use markdown tables, bold markers, italic markers, or decorative separators because this report is exported to PDF. Use plain headings and short plain lines.
 If a value is missing, write "Not extracted".
 
 For contracts, the useful report is not a numbers report. Summarize the document substance: parties, purpose, effective date, term/survival, confidentiality duties, return/destruction, governing law or dispute venue, signature status, and review flags.

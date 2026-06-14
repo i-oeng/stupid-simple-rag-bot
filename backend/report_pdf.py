@@ -73,7 +73,8 @@ def _ensure_space(state: Dict[str, Any], height: float) -> None:
 
 
 def _text(state: Dict[str, Any], text: Any, x: float, y: float, size: float = 10, color=INK, bold: bool = False) -> None:
-    state["page"].insert_text((x, y), str(text), fontsize=size, fontname=FONT, color=color)
+    font = "hebo" if bold else FONT
+    state["page"].insert_text((x, y), str(text), fontsize=size, fontname=font, color=color)
 
 
 def _header(state: Dict[str, Any], case: Dict[str, Any], title: str = "Document Case Report") -> None:
@@ -116,7 +117,7 @@ def _section(state: Dict[str, Any], title: str) -> None:
 
 
 def _paragraph(state: Dict[str, Any], text: str) -> None:
-    for line in _wrap(text, 88):
+    for line in _wrap(_plain_markdown(text), 88):
         _ensure_space(state, LINE_HEIGHT + 2)
         _text(state, line, MARGIN, state["y"], size=9, color=INK)
         state["y"] += LINE_HEIGHT
@@ -131,26 +132,71 @@ def _markdown_report(state: Dict[str, Any], text: str) -> None:
             continue
         if line.startswith("###"):
             _ensure_space(state, 28)
-            _text(state, line.lstrip("# ").strip(), MARGIN, state["y"], size=11, color=BLUE, bold=True)
+            _text(state, _plain_markdown(line.lstrip("# ").strip()), MARGIN, state["y"], size=11, color=BLUE, bold=True)
             state["y"] += 17
             continue
         if line.startswith("##"):
-            _section(state, line.lstrip("# ").strip())
+            _section(state, _plain_markdown(line.lstrip("# ").strip()))
             continue
         if line.startswith("#"):
             _ensure_space(state, 30)
-            _text(state, line.lstrip("# ").strip(), MARGIN, state["y"], size=13, color=BLUE, bold=True)
+            _text(state, _plain_markdown(line.lstrip("# ").strip()), MARGIN, state["y"], size=13, color=BLUE, bold=True)
             state["y"] += 18
             continue
-        bullet = line.startswith(("- ", "* "))
-        if bullet:
-            line = line[2:].strip()
-        prefix = "- " if bullet else ""
-        for wrapped in _wrap(prefix + line, 88):
+
+        line = re.sub(r"^[-*]\s+", "", line).strip()
+        line = re.sub(r"^\d+[.)]\s+", "", line).strip()
+        line = _plain_markdown(line)
+        if not line:
+            continue
+        key_value = _split_report_key_value(line)
+        if key_value:
+            _report_key_value_row(state, key_value[0], key_value[1])
+            continue
+        for wrapped in _wrap(line, 88):
             _ensure_space(state, LINE_HEIGHT + 2)
             _text(state, wrapped, MARGIN, state["y"], size=9, color=INK)
             state["y"] += LINE_HEIGHT
     state["y"] += 8
+
+
+def _report_key_value_row(state: Dict[str, Any], label: Any, value: Any) -> None:
+    label_text = _plain_markdown(label).strip(" :") or "Detail"
+    value_text = _plain_markdown(value).strip() or "Not extracted"
+    label_lines = _wrap(label_text, 24)
+    value_lines = _wrap(value_text, 58)
+    row_lines = max(len(label_lines), len(value_lines), 1)
+    _ensure_space(state, row_lines * LINE_HEIGHT + 6)
+    start_y = state["y"]
+    for index, line in enumerate(label_lines):
+        _text(state, line, MARGIN, start_y + index * LINE_HEIGHT, size=8.5, color=MUTED, bold=True)
+    for index, line in enumerate(value_lines):
+        _text(state, line, MARGIN + 165, start_y + index * LINE_HEIGHT, size=9, color=INK)
+    state["y"] += row_lines * LINE_HEIGHT + 4
+
+
+def _split_report_key_value(line: str) -> tuple | None:
+    if ":" not in line:
+        return None
+    label, value = line.split(":", 1)
+    label = label.strip()
+    value = value.strip()
+    if not label or not value or len(label) > 42:
+        return None
+    if re.search(r"[.!?]$", label):
+        return None
+    return label, value
+
+
+def _plain_markdown(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _field_rows(state: Dict[str, Any], fields: Dict[str, Any]) -> None:
@@ -164,10 +210,7 @@ def _field_rows(state: Dict[str, Any], fields: Dict[str, Any]) -> None:
 
 def _key_value_rows(state: Dict[str, Any], rows: Iterable[tuple]) -> None:
     for label, value in rows:
-        _ensure_space(state, 20)
-        _text(state, label, MARGIN, state["y"], size=9, color=MUTED, bold=True)
-        _text(state, value, MARGIN + 190, state["y"], size=9, color=INK)
-        state["y"] += 18
+        _report_key_value_row(state, str(label), _format_value(value))
     state["y"] += 6
 
 

@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import fitz
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from demo_data import demo_client_info, demo_document, demo_metadata, demo_review_settings
@@ -257,10 +259,16 @@ def test_case_pdf_export(tmp_path):
 def test_generated_report_pdf_export(tmp_path):
     service = make_service(tmp_path)
     item = create_case(service, "invoice")
-    pdf_path = build_generated_report_pdf(item, "## Executive Summary\n- Total amount: 18,450.75", tmp_path / "reports")
+    report_text = "## Executive Summary\n- **Total amount**: 18,450.75\n- **Risk**: medium"
+    pdf_path = build_generated_report_pdf(item, report_text, tmp_path / "reports")
+    pdf_text = "\n".join(page.get_text() for page in fitz.open(pdf_path))
 
     assert pdf_path.exists()
     assert pdf_path.suffix == ".pdf"
     assert pdf_path.name.endswith("_report.pdf")
     assert len(pdf_path.name) < 90
     assert pdf_path.stat().st_size > 1000
+    assert "**" not in pdf_text
+    assert "- Total amount" not in pdf_text
+    assert "Total amount" in pdf_text
+    assert "18,450.75" in pdf_text
