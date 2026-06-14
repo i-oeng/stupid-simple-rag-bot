@@ -288,20 +288,45 @@ async def case_audit(case_id: str):
     return {"events": case_service.audit_log(case_id)}
 
 
+@app.post("/cases/{case_id}/title")
+async def generate_case_title(case_id: str, actor: str = "streamlit"):
+    item = case_service.get_case(case_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Case not found")
+    facts = _case_report_facts(item)
+    prompt = f"""Create a short, professional title for this document review case.
+Use only the supplied facts. Do not include the case ID. Do not use quotes.
+Return only the title, maximum 8 words.
+
+Facts:
+{facts}
+"""
+    title = (await _ask_ollama(prompt)).strip().strip('"').strip("'")
+    title = title.splitlines()[0] if title else ""
+    try:
+        return case_service.update_title(case_id, title, actor=actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/cases/{case_id}/report-text")
 async def generate_polished_case_report(case_id: str):
     item = case_service.get_case(case_id)
     if not item:
         raise HTTPException(status_code=404, detail="Case not found")
+    facts = _case_report_facts(item)
     prompt = f"""You are drafting a concise operational document review report.
-Use only the supplied structured data. Do not change extracted values.
-Return a clean report with sections: Executive Summary, Extracted Fields, Risks, Missing Items, Recommended Next Actions.
+Use only the supplied facts and structured case data. Do not invent facts, do not change numbers, and do not add unsupported conclusions.
+Return a clean Markdown report with sections: Executive Summary, Verified Numbers, Extracted Fields, Risks, Missing Items, Recommended Next Actions.
+
+Facts to preserve exactly:
+{facts}
 
 Structured case data:
 {item}
 """
     answer = await _ask_ollama(prompt)
-    return {"case_id": case_id, "model": OLLAMA_MODEL, "report_text": answer}
+    return {"case_id": case_id, "model": OLLAMA_MODEL, "facts": facts, "report_text": answer}
 
 
 @app.get("/cases/{case_id}/export-pdf")
@@ -358,6 +383,7 @@ async def root():
             "PATCH /cases/{case_id}/settings": "Edit review thresholds and create a new version",
             "GET /cases/{case_id}/diff": "Compare case versions",
             "PATCH /cases/{case_id}/status": "Move case through New, Parsed, Needs Review, Approved, Sent",
+            "POST /cases/{case_id}/title": "Generate and save a short Qwen case title",
             "POST /cases/{case_id}/report-text": "Generate polished local LLM report text",
             "GET /cases/{case_id}/export-pdf": "Export a PDF case report",
             "GET /documents/{document_id}/report": "Download the Markdown processing report",
@@ -373,6 +399,32 @@ def _format_search_context(results: List[dict]) -> str:
         filename = metadata.get("filename", "unknown")
         lines.append(f"[{index}] File: {filename}, Page: {page}\n{item.get('text', '')}")
     return "\n\n".join(lines)
+
+
+def _case_report_facts(item: Dict[str, Any]) -> Dict[str, Any]:
+    extraction = item.get("extraction", {})
+    fields = extraction.get("fields", {})
+    summary = item.get("case_summary", {})
+    checklist = item.get("review_checklist", {})
+    return {
+        "case_id": item.get("case_id"),
+        "source_filename": item.get("source_filename"),
+        "document_type": summary.get("document_type") or extraction.get("document_type"),
+        "counterparty": fields.get("counterparty", {}).get("value"),
+        "document_id_number": fields.get("document_id_number", {}).get("value"),
+        "document_date": fields.get("document_date", {}).get("value"),
+        "service_or_site": fields.get("service_or_site", {}).get("value"),
+        "category_or_rate": fields.get("category_or_rate", {}).get("value"),
+        "total_amount": summary.get("total_amount"),
+        "period_metric_count": summary.get("period_metric_count"),
+        "period_metric_total": summary.get("period_metric_total"),
+        "data_completeness": summary.get("data_completeness"),
+        "low_confidence_count": summary.get("low_confidence_count"),
+        "qr_codes_found": summary.get("qr_codes_found"),
+        "visual_markers_found": summary.get("visual_markers_found"),
+        "risk_level": checklist.get("risk_level"),
+        "failed_checks": checklist.get("failed_checks", []),
+    }
 
 
 async def _ask_ollama(prompt: str) -> str:

@@ -8,6 +8,38 @@ import streamlit as st
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
 STATUS_FLOW = ["New", "Parsed", "Needs Review", "Approved", "Sent"]
 DEMO_CASES = ["utility_bill", "contract", "invoice", "incomplete"]
+LABEL_OVERRIDES = {
+    "case_needs_review": "Case Needs Review",
+    "category_or_rate": "Category / Rate",
+    "counterparty": "Counterparty",
+    "data_completeness": "Data Completeness",
+    "date_or_term_present": "Date Or Term Present",
+    "document_date": "Document Date",
+    "document_id_number": "Document ID Number",
+    "document_type": "Document Type",
+    "document_type_detected": "Document Type Detected",
+    "financial_statement": "Financial Statement",
+    "identifier_present": "Identifier Present",
+    "low_confidence_count": "Low Confidence Count",
+    "logo_candidate": "Logo Candidate",
+    "materiality_flag": "Materiality Flag",
+    "operational_document": "Operational Document",
+    "period_metric_count": "Period Metric Count",
+    "period_metric_total": "Period Metric Total",
+    "qr_codes_found": "QR Codes Found",
+    "review_context_present": "Review Context Present",
+    "service_or_site": "Service / Site",
+    "signature_candidate": "Signature Candidate",
+    "stamp_candidate": "Stamp Candidate",
+    "structured_values_found": "Structured Values Found",
+    "tables_found": "Tables Found",
+    "total_amount": "Total Amount",
+    "utility_bill": "Utility Bill",
+    "visual_marker_requirement": "Visual Marker Requirement",
+    "visual_marker_types": "Visual Marker Types",
+    "visual_markers_found": "Visual Markers Found",
+}
+ACRONYMS = {"api", "crm", "id", "json", "pdf", "qr", "rag", "sla", "url"}
 
 st.set_page_config(page_title="Local DocumentOps Automation", layout="wide", initial_sidebar_state="expanded")
 
@@ -64,12 +96,6 @@ def api_patch(path: str, json: Dict[str, Any]):
     return response.json()
 
 
-def api_download(path: str) -> bytes:
-    response = requests.get(f"{API_URL}{path}", timeout=120)
-    response.raise_for_status()
-    return response.content
-
-
 def fmt_number(value: Any, decimals: int = 0) -> str:
     try:
         return f"{float(value):,.{decimals}f}"
@@ -85,13 +111,78 @@ def risk_tone(risk: str) -> str:
     return {"low": "green", "medium": "amber", "high": "red"}.get(str(risk).lower(), "blue")
 
 
+def humanize(value: Any) -> str:
+    if value is None or value == "":
+        return "Unknown"
+    text = str(value)
+    if text in LABEL_OVERRIDES:
+        return LABEL_OVERRIDES[text]
+    words = text.replace("_", " ").replace("-", " ").split()
+    return " ".join(word.upper() if word.lower() in ACRONYMS else word.capitalize() for word in words)
+
+
+def field_key(label: Any) -> str:
+    text = str(label or "").strip()
+    reverse = {display: key for key, display in LABEL_OVERRIDES.items()}
+    if text in reverse:
+        return reverse[text]
+    return text.lower().replace("/", " ").replace("-", " ").replace("_", " ").strip().replace(" ", "_")
+
+
+def display_rows(rows: List[Dict[str, Any]]) -> pd.DataFrame:
+    value_humanize_keys = {"action", "document_type", "event", "field", "marker", "metric", "name", "risk", "source", "status", "type", "unit"}
+    cleaned = []
+    for row in rows:
+        cleaned.append({humanize(key): humanize(value) if key in value_humanize_keys else value for key, value in row.items()})
+    return pd.DataFrame(cleaned)
+
+
+def format_details(details: Any) -> str:
+    if not isinstance(details, dict):
+        return str(details or "")
+    parts = []
+    for key, value in details.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            parts.append(f"{humanize(key)}: {humanize(value) if isinstance(value, str) else value}")
+        elif isinstance(value, list):
+            parts.append(f"{humanize(key)}: {len(value)} item(s)")
+        else:
+            parts.append(f"{humanize(key)}: updated")
+    return ", ".join(parts)
+
+
+def audit_rows(events: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for event in events:
+        rows.append({
+            "Timestamp": event.get("timestamp", ""),
+            "Actor": humanize(event.get("actor", "")),
+            "Action": humanize(event.get("action", "")),
+            "Details": format_details(event.get("details", {})),
+        })
+    return pd.DataFrame(rows)
+
+
 def load_cases() -> List[Dict[str, Any]]:
     return api_get("/cases").get("cases", [])
 
 
+def case_title(case: Dict[str, Any]) -> str:
+    metadata = case.get("metadata", {}) or {}
+    fields = case.get("extraction", {}).get("fields", {}) or {}
+    counterparty = fields.get("counterparty", {}).get("value")
+    document_id = fields.get("document_id_number", {}).get("value")
+    source = case.get("source_filename")
+    candidate = metadata.get("display_title") or counterparty or case.get("client_info", {}).get("company") or source or "Document Case"
+    if candidate in {"Operations", "Review Queue", "Unknown"} and source:
+        candidate = source
+    if document_id and document_id not in str(candidate):
+        return f"{candidate} - {document_id}"
+    return str(candidate)
+
+
 def case_label(case: Dict[str, Any]) -> str:
-    owner = case.get("client_info", {}).get("company") or case.get("metadata", {}).get("owner") or case.get("source_filename") or "Case"
-    return f"{owner} | {str(case.get('case_id', ''))[:8]}"
+    return f"{case_title(case)} | {str(case.get('case_id', ''))[:8]}"
 
 
 def select_case(cases: List[Dict[str, Any]], key: str) -> Optional[Dict[str, Any]]:
@@ -114,13 +205,22 @@ def make_field_rows(fields: Dict[str, Any]) -> pd.DataFrame:
     for name, payload in fields.items():
         if not isinstance(payload, dict):
             payload = {"value": payload, "confidence": 0}
-        rows.append({"field": name, "value": payload.get("value"), "confidence": float(payload.get("confidence", 0))})
-    return pd.DataFrame(rows, columns=["field", "value", "confidence"])
+        rows.append({"field_key": name, "field": humanize(name), "value": payload.get("value"), "confidence": float(payload.get("confidence", 0))})
+    return pd.DataFrame(rows, columns=["field_key", "field", "value", "confidence"])
 
 
 def make_metric_rows(metrics: List[Dict[str, Any]]) -> pd.DataFrame:
     rows = metrics or [{"period": "", "value": 0.0, "unit": "value", "confidence": 1.0, "source": "manual"}]
-    return pd.DataFrame(rows, columns=["period", "value", "unit", "confidence", "source"])
+    display = []
+    for row in rows:
+        display.append({
+            "period": humanize(row.get("period", "")),
+            "value": row.get("value", 0.0),
+            "unit": humanize(row.get("unit", "value")),
+            "confidence": row.get("confidence", 1.0),
+            "source": humanize(row.get("source", "manual")),
+        })
+    return pd.DataFrame(display, columns=["period", "value", "unit", "confidence", "source"])
 
 
 def clean_cell(value: Any) -> Any:
@@ -134,10 +234,10 @@ def pipeline_rows(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for item in cases:
         summary = item.get("case_summary", {})
         rows.append({
-            "owner": item.get("client_info", {}).get("company") or item.get("metadata", {}).get("owner") or item.get("source_filename") or "Unknown",
-            "status": item.get("status"),
-            "type": summary.get("document_type", "unknown"),
-            "risk": item.get("review_checklist", {}).get("risk_level", "unknown"),
+            "case": case_title(item),
+            "status": humanize(item.get("status")),
+            "type": humanize(summary.get("document_type", "unknown")),
+            "risk": humanize(item.get("review_checklist", {}).get("risk_level", "unknown")),
             "completeness": summary.get("data_completeness", 0),
             "low_confidence": summary.get("low_confidence_count", 0),
             "total_amount": summary.get("total_amount", 0),
@@ -148,20 +248,28 @@ def pipeline_rows(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return rows
 
 
-def integration_rows() -> List[Dict[str, str]]:
-    return [
-        {"system": "FastAPI", "purpose": "Document processing and case workflow API", "status": "implemented"},
-        {"system": "Streamlit", "purpose": "Internal review dashboard", "status": "implemented"},
-        {"system": "Ollama/Qwen", "purpose": "Local report writing and document Q&A", "status": "implemented"},
-        {"system": "Telegram", "purpose": "Lightweight notifications and bot access", "status": "implemented"},
-        {"system": "n8n", "purpose": "Upload, review, notification, and CRM workflow", "status": "workflow JSON included"},
-        {"system": "Supabase", "purpose": "Postgres schema for multi-user persistence", "status": "schema included"},
-        {"system": "Docker", "purpose": "Backend, dashboard, n8n, optional Ollama", "status": "compose included"},
-    ]
+def report_facts(case: Dict[str, Any]) -> Dict[str, Any]:
+    summary = case.get("case_summary", {}) or {}
+    fields = case.get("extraction", {}).get("fields", {}) or {}
+    checklist = case.get("review_checklist", {}) or {}
+    return {
+        "Document Type": humanize(summary.get("document_type")),
+        "Counterparty": fields.get("counterparty", {}).get("value"),
+        "Document ID": fields.get("document_id_number", {}).get("value"),
+        "Document Date": fields.get("document_date", {}).get("value"),
+        "Service / Site": fields.get("service_or_site", {}).get("value"),
+        "Category / Rate": fields.get("category_or_rate", {}).get("value"),
+        "Total Amount": summary.get("total_amount"),
+        "Period Values": summary.get("period_metric_count"),
+        "Period Total": summary.get("period_metric_total"),
+        "Completeness": f"{float(summary.get('data_completeness') or 0):.0%}",
+        "Low Confidence Fields": summary.get("low_confidence_count"),
+        "Visual Markers": summary.get("visual_markers_found"),
+        "Risk": humanize(checklist.get("risk_level")),
+    }
 
 
 st.title("Local DocumentOps Automation")
-st.caption(f"Backend: {API_URL}")
 
 try:
     health = api_get("/health")
@@ -170,16 +278,12 @@ except Exception as exc:
     st.stop()
 
 with st.sidebar:
-    st.subheader("Connection")
-    st.success(f"{health.get('mode')} | cases: {health.get('case_count', 0)}")
-    st.caption(f"Ollama model: {health.get('ollama_model')}")
-
     st.subheader("Context")
     company = st.text_input("Company / owner", value="")
     contact = st.text_input("Contact name", value="")
     email = st.text_input("Email", value="")
     department = st.text_input("Department", value="Operations")
-    priority = st.selectbox("Priority", ["normal", "high", "urgent"])
+    priority = st.selectbox("Priority", ["normal", "high", "urgent"], format_func=humanize)
 
     st.subheader("Review Settings")
     materiality = st.number_input("Materiality amount", min_value=0.0, value=10000.0, step=1000.0)
@@ -197,7 +301,7 @@ pipeline_df = pd.DataFrame(pipeline_rows(cases))
 counts = {status: len([item for item in cases if item.get("status") == status]) for status in STATUS_FLOW}
 review_backlog = counts.get("Needs Review", 0)
 avg_completeness = pipeline_df["completeness"].mean() if not pipeline_df.empty else 0
-high_risk = len(pipeline_df[pipeline_df["risk"] == "high"]) if not pipeline_df.empty else 0
+high_risk = len(pipeline_df[pipeline_df["risk"] == "High"]) if not pipeline_df.empty else 0
 material_total = pipeline_df["total_amount"].sum() if not pipeline_df.empty else 0
 
 summary_cols = st.columns(5)
@@ -207,14 +311,13 @@ summary_cols[2].metric("High Risk", high_risk)
 summary_cols[3].metric("Avg Complete", f"{avg_completeness:.0%}")
 summary_cols[4].metric("Total Amount", fmt_number(material_total, 0))
 
-intake_tab, ops_tab, board_tab, review_tab, settings_tab, report_tab, integrations_tab, audit_tab = st.tabs([
+intake_tab, ops_tab, board_tab, review_tab, settings_tab, report_tab, audit_tab = st.tabs([
     "Intake",
     "Operations",
     "Status Board",
     "Review Queue",
     "Settings & Diff",
     "Report",
-    "Integrations",
     "Audit",
 ])
 
@@ -246,7 +349,7 @@ with intake_tab:
                 st.error(f"Processing failed: {exc}")
     with right:
         st.subheader("Demo")
-        demo_case = st.selectbox("Demo case", DEMO_CASES)
+        demo_case = st.selectbox("Demo case", DEMO_CASES, format_func=humanize)
         if st.button("Create demo case"):
             try:
                 result = api_post(f"/demo/seed?case={demo_case}", timeout=120)
@@ -261,7 +364,7 @@ with intake_tab:
             {"signal": "Vector search", "status": "active" if health.get("embeddings_enabled") else "off"},
             {"signal": "QR/stamp/signature/logo detection", "status": "local heuristic"},
         ]
-        st.dataframe(pd.DataFrame(signal_rows), width='stretch', hide_index=True)
+        st.dataframe(display_rows(signal_rows), width='stretch', hide_index=True)
 
 with ops_tab:
     st.subheader("Operations Dashboard")
@@ -270,7 +373,9 @@ with ops_tab:
         chart_left.bar_chart(pipeline_df.groupby("status").size().reindex(STATUS_FLOW, fill_value=0))
         chart_right.bar_chart(pipeline_df.groupby("risk").size())
         st.markdown("#### Case Pipeline")
-        st.dataframe(pipeline_df.sort_values(["status", "risk", "low_confidence"], ascending=[True, True, False]), width='stretch', hide_index=True)
+        pipeline_view = pipeline_df.sort_values(["status", "risk", "low_confidence"], ascending=[True, True, False])
+        pipeline_view = pipeline_view.rename(columns={column: humanize(column) for column in pipeline_view.columns})
+        st.dataframe(pipeline_view, width='stretch', hide_index=True)
     else:
         st.info("No document cases yet.")
 
@@ -289,10 +394,10 @@ with board_tab:
                 st.markdown(
                     f"""
                     <div class="workflow-card">
-                    <strong>{item.get('client_info', {}).get('company') or item.get('source_filename')}</strong><br>
+                    <strong>{case_title(item)}</strong><br>
                     <span class="muted">{str(item.get('case_id'))[:8]}</span><br>
-                    {badge(str(risk).upper(), risk_tone(risk))}<br><br>
-                    <span class="muted">{summary.get('document_type', 'unknown')}</span><br>
+                    {badge(humanize(risk).upper(), risk_tone(risk))}<br><br>
+                    <span class="muted">{humanize(summary.get('document_type', 'unknown'))}</span><br>
                     <span class="muted">Complete {float(summary.get('data_completeness') or 0):.0%}</span><br>
                     <span class="muted">Markers {summary.get('visual_markers_found', 0)}</span>
                     </div>
@@ -306,31 +411,48 @@ with review_tab:
     if not selected:
         st.info("Create a document case from Intake first.")
     else:
+        title_cols = st.columns([3, 1])
+        title_cols[0].markdown(f"#### {case_title(selected)}")
+        if title_cols[1].button("Name with Qwen", key=f"title_{selected['case_id']}"):
+            try:
+                updated = api_post(f"/cases/{selected['case_id']}/title?actor=streamlit", timeout=180)
+                st.session_state["selected_case_id"] = updated.get("case_id")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not generate case name: {exc}")
+
         summary = selected.get("case_summary", {})
         risk = selected.get("review_checklist", {}).get("risk_level", "unknown")
         cols = st.columns(6)
-        cols[0].metric("Type", summary.get("document_type", "unknown"))
+        cols[0].metric("Type", humanize(summary.get("document_type", "unknown")))
         cols[1].metric("Completeness", f"{float(summary.get('data_completeness') or 0):.0%}")
         cols[2].metric("Low Conf", summary.get("low_confidence_count", 0))
         cols[3].metric("Markers", summary.get("visual_markers_found", 0))
         cols[4].metric("Amount", fmt_number(summary.get("total_amount"), 0))
-        cols[5].markdown(f"Risk<br>{badge(str(risk).upper(), risk_tone(risk))}", unsafe_allow_html=True)
+        cols[5].markdown(f"Risk<br>{badge(humanize(risk).upper(), risk_tone(risk))}", unsafe_allow_html=True)
 
         low_conf = selected.get("review", {}).get("low_confidence_fields", [])
         if low_conf:
             st.warning(f"{len(low_conf)} field(s) need review.")
-            st.dataframe(pd.DataFrame(low_conf), width='stretch', hide_index=True)
+            st.dataframe(display_rows(low_conf), width='stretch', hide_index=True)
         else:
             st.success("No low-confidence fields detected.")
 
         marker_types = selected.get("extraction", {}).get("visual_marker_types", {}) or {}
         if marker_types:
-            st.dataframe(pd.DataFrame([{"marker": key, "count": value} for key, value in marker_types.items()]), width='stretch', hide_index=True)
+            st.dataframe(display_rows([{"marker": key, "count": value} for key, value in marker_types.items()]), width='stretch', hide_index=True)
 
         edit_left, edit_right = st.columns([1.1, 1])
         with edit_left:
             st.markdown("#### Extracted Fields")
-            edited_fields = st.data_editor(make_field_rows(selected.get("extraction", {}).get("fields", {})), width='stretch', hide_index=True, num_rows="dynamic", key=f"fields_{selected['case_id']}")
+            edited_fields = st.data_editor(
+                make_field_rows(selected.get("extraction", {}).get("fields", {})),
+                width='stretch',
+                hide_index=True,
+                num_rows="dynamic",
+                column_config={"field_key": None, "field": st.column_config.TextColumn("Field")},
+                key=f"fields_{selected['case_id']}",
+            )
         with edit_right:
             st.markdown("#### Structured Metrics")
             edited_metrics = st.data_editor(make_metric_rows(selected.get("extraction", {}).get("period_metrics", [])), width='stretch', hide_index=True, num_rows="dynamic", key=f"metrics_{selected['case_id']}")
@@ -339,14 +461,14 @@ with review_tab:
         if action_cols[0].button("Save corrections", type="primary"):
             fields_payload = {}
             for _, row in edited_fields.iterrows():
-                name = str(clean_cell(row.get("field")) or "").strip()
+                name = str(clean_cell(row.get("field_key")) or field_key(clean_cell(row.get("field"))) or "").strip()
                 if name:
                     fields_payload[name] = {"value": clean_cell(row.get("value")), "confidence": float(row.get("confidence") or 1.0)}
             metrics_payload = []
             for _, row in edited_metrics.iterrows():
-                period = str(clean_cell(row.get("period")) or "").strip()
+                period = str(clean_cell(row.get("period")) or "").strip().lower()
                 if period:
-                    metrics_payload.append({"period": period, "value": float(row.get("value") or 0), "unit": clean_cell(row.get("unit")) or "value", "confidence": float(row.get("confidence") or 1.0), "source": clean_cell(row.get("source")) or "manual"})
+                    metrics_payload.append({"period": period, "value": float(row.get("value") or 0), "unit": str(clean_cell(row.get("unit")) or "value").lower(), "confidence": float(row.get("confidence") or 1.0), "source": str(clean_cell(row.get("source")) or "manual").lower()})
             api_patch(f"/cases/{selected['case_id']}/extraction", {"fields": fields_payload, "period_metrics": metrics_payload, "actor": "streamlit"})
             st.rerun()
 
@@ -358,7 +480,7 @@ with review_tab:
             st.rerun()
 
         st.markdown("#### Review Checklist")
-        st.dataframe(pd.DataFrame(selected.get("review_checklist", {}).get("checks", [])), width='stretch', hide_index=True)
+        st.dataframe(display_rows(selected.get("review_checklist", {}).get("checks", [])), width='stretch', hide_index=True)
 
 with settings_tab:
     st.subheader("Settings & Diff")
@@ -381,36 +503,39 @@ with settings_tab:
             right_version = st.selectbox("Right version", version_ids, index=len(version_ids) - 1)
             diff = api_get(f"/cases/{selected['case_id']}/diff", left=left_version, right=right_version)
             rows = [{"metric": key, "left": payload.get("left"), "right": payload.get("right"), "delta": payload.get("delta")} for key, payload in diff.get("summary_delta", {}).items()]
-            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+            st.dataframe(display_rows(rows), width='stretch', hide_index=True)
         else:
             st.info("Create a settings or correction version to compare.")
 
 with report_tab:
-    st.subheader("Generated Report")
+    st.subheader("Report")
     selected = select_case(cases, "report_case")
     if selected:
-        st.text_area("Deterministic report", selected.get("generated_report", ""), height=340)
-        export_cols = st.columns([1, 1, 3])
-        if export_cols[0].button("Prepare PDF report"):
-            try:
-                st.session_state["case_pdf_bytes"] = api_download(f"/cases/{selected['case_id']}/export-pdf")
-                st.session_state["case_pdf_name"] = f"document_case_{selected['case_id']}.pdf"
-                st.success("PDF report is ready")
-            except Exception as exc:
-                st.error(f"PDF export failed: {exc}")
-        if st.session_state.get("case_pdf_bytes"):
-            export_cols[1].download_button("Download PDF", data=st.session_state["case_pdf_bytes"], file_name=st.session_state.get("case_pdf_name", "document_case.pdf"), mime="application/pdf")
-        if st.button("Generate polished report with Ollama/Qwen"):
+        facts = report_facts(selected)
+        st.markdown("#### Verified Values Used")
+        st.dataframe(pd.DataFrame([facts]), width='stretch', hide_index=True)
+
+        report_key = f"ai_report_{selected['case_id']}"
+        if st.button("Generate report with Qwen", type="primary"):
             try:
                 result = api_post(f"/cases/{selected['case_id']}/report-text", timeout=180)
-                st.text_area("Polished report", result.get("report_text", ""), height=420)
+                st.session_state[report_key] = result.get("report_text", "")
+                st.session_state[f"{report_key}_model"] = result.get("model", "")
             except Exception as exc:
                 st.error(f"Qwen report failed: {exc}")
 
-with integrations_tab:
-    st.subheader("Integrations")
-    st.dataframe(pd.DataFrame(integration_rows()), width='stretch', hide_index=True)
-    st.json({"event": "case_needs_review", "case_id": "{case_id}", "status": "Needs Review", "next_action": "Review low-confidence fields"})
+        report_text = st.session_state.get(report_key, "")
+        if not report_text:
+            st.info("Generate a report to review and download the Qwen-written version.")
+        st.text_area("Report text", report_text, height=440)
+        if report_text:
+            filename = f"{case_title(selected).lower().replace(' ', '_').replace('/', '-')}_report.md"
+            st.download_button(
+                "Download report",
+                data=report_text.encode("utf-8"),
+                file_name=filename,
+                mime="text/markdown",
+            )
 
 with audit_tab:
     st.subheader("Audit")
@@ -418,6 +543,6 @@ with audit_tab:
     if selected:
         audit = api_get(f"/cases/{selected['case_id']}/audit").get("events", [])
         if audit:
-            st.dataframe(pd.DataFrame(audit), width='stretch', hide_index=True)
+            st.dataframe(audit_rows(audit), width='stretch', hide_index=True)
         else:
             st.info("No audit events yet.")

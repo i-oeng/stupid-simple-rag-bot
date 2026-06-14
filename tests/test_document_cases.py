@@ -60,6 +60,18 @@ def test_settings_update_creates_version_and_diff(tmp_path):
     assert "materiality_flag" in diff["summary_delta"]
 
 
+def test_title_update_is_saved_and_audited(tmp_path):
+    service = make_service(tmp_path)
+    item = create_case(service, "contract")
+
+    updated = service.update_title(item["case_id"], "Maintenance Contract Review", actor="test")
+    audit = service.audit_log(item["case_id"])
+
+    assert updated["metadata"]["display_title"] == "Maintenance Contract Review"
+    assert service.get_case(item["case_id"])["metadata"]["display_title"] == "Maintenance Contract Review"
+    assert any(event["action"] == "title_updated" for event in audit)
+
+
 def test_manual_correction_recalculates_and_audits(tmp_path):
     service = make_service(tmp_path)
     item = create_case(service, "incomplete")

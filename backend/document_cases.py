@@ -204,6 +204,22 @@ class DocumentCaseService:
         self._audit(case_id, actor, "status_changed", {"from": previous, "to": status, "note": note})
         return case
 
+    def update_title(self, case_id: str, title: str, actor: str = "user") -> Dict[str, Any]:
+        cleaned = " ".join(str(title or "").split()).strip(" .")
+        if not cleaned:
+            raise ValueError("Title cannot be empty")
+        if len(cleaned) > 90:
+            cleaned = cleaned[:90].rstrip()
+        case = self.get_case(case_id)
+        if not case:
+            raise ValueError("Case not found")
+        previous = case.setdefault("metadata", {}).get("display_title")
+        case["metadata"]["display_title"] = cleaned
+        case["updated_at"] = utc_now()
+        self._save_case(case)
+        self._audit(case_id, actor, "title_updated", {"from": previous, "to": cleaned})
+        return case
+
     def update_settings(self, case_id: str, settings: Dict[str, Any], actor: str = "user") -> Dict[str, Any]:
         case = self.get_case(case_id)
         if not case:
